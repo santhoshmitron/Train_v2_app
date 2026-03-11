@@ -1,0 +1,811 @@
+package com.jsinfotech.Service;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import com.jsinfotech.Domain.ManageGates;
+import com.jsinfotech.Domain.Reports;
+
+
+@Service
+public class ReportsService {
+	
+	private static final Logger logger = LogManager.getLogger(ReportsService.class);
+
+	@Autowired
+	private NamedParameterJdbcTemplate jdbcTemplate;
+
+	@Autowired
+	JdbcTemplate jdbcTemplate1;
+	
+	@Autowired
+	private RedisUserRepository userRepository;
+	@Autowired
+	AcknowledgementService ackService;
+	
+	@Autowired
+	private PNGenerationService pnGenerationService;
+
+	public  List<Reports> findByUsername(String username,String role) {
+		logger.debug("Finding reports for username: {}, role: {}", username, role);
+
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		parameters.addValue("username", username);
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd 00:00:00");
+		String user="";
+
+		String  query = "";
+		if (role.indexOf('s')!=-1) {
+			query = "select * from reports where sm=(:username) and added_on>(:added_on) order by id DESC" ;	
+			logger.debug("SM reports query: {}", query);
+
+		}
+		else if(role.indexOf('g')!=-1)
+		{
+			query = "select * from reports where gm=(:username) and added_on>(:added_on) order by id DESC" ;	
+			logger.debug("GM reports query: {}", query);
+
+		}
+		
+		// Return empty list if query is not set (invalid role)
+		if (query.isEmpty()) {
+			return new ArrayList<>();
+		}
+
+		parameters.addValue("user", user);
+
+		try {
+			Date today = Calendar.getInstance().getTime();
+			today.setHours(0);
+			today.setMinutes(0);
+			today.setSeconds(0);
+			// Using DateFormat format method we can create a string 
+			// representation of a date with the defined format.
+			String todayAsString = formatter.format(today);
+
+			Date date1 =formatter.parse(todayAsString);
+			logger.debug("Date filter: {}", todayAsString);
+
+			parameters.addValue("added_on", todayAsString);
+
+		} catch (ParseException e) {
+			e.printStackTrace();
+		}
+		return jdbcTemplate.query(query,parameters, new RowMapper<Reports>() {
+			@Override
+			public Reports mapRow(ResultSet rs, int i) throws SQLException {
+				Reports customer = new Reports();
+				String ackn = rs.getString("ackn");
+				String lc_stat = rs.getString("lc_status");
+				String lc_pin = rs.getString("lc_pin");
+				String lc_name = rs.getString("lc_name");
+				customer.setLc(rs.getString("lc"));
+				String lc_lock_time = rs.getString("lc_lock_time");
+				if(lc_lock_time == null) {
+					lc_lock_time = "";
+				}
+                String tn = rs.getString("tn");
+                // Handle null for tn
+                if(tn != null && tn.length()>5) {
+                	tn = tn.substring(0,5);
+                }
+                if(tn == null) {
+                	tn = "";
+                }
+				//customer.setId(rs.getInt("id"));
+                customer.setId(i+1);
+				customer.setLc_name(lc_name);
+				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
+				customer.setCommand(rs.getString("command"));
+				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				// Handle null for lc_stat - set to empty string if null
+				if(lc_stat == null) {
+					lc_stat = "";
+				}
+				
+				// Handle null for lc_open_time - set to empty string if null
+				String lc_open_time = rs.getString("lc_open_time");
+				if(lc_open_time == null) {
+					lc_open_time = "";
+				}
+				
+				if(lc_stat.equalsIgnoreCase("Closed")) {
+				customer.setLc_status(lc_stat+"" + "["+lc_lock_time+"]");
+				}
+				else {
+					customer.setLc_status(lc_stat+"" + "["+lc_open_time+"]");
+				}				
+				customer.setLc_lock_time(lc_lock_time);
+				
+				// Handle null for lc_pin - set to empty string if null
+				if(lc_pin == null) {
+					lc_pin = "";
+				}
+				// Handle null for lc_pin_time - set to empty string if null
+				String lc_pin_time = rs.getString("lc_pin_time");
+				if(lc_pin_time == null) {
+					lc_pin_time = "";
+				}
+				customer.setLc_pin(lc_pin+"" + "["+lc_pin_time+"]");
+				customer.setAckn(ackn);
+				customer.setSm(rs.getString("sm"));
+				customer.setLc_open_time("[ "+lc_open_time+" ]");
+				
+				// Handle null for Boom_Lock - set to empty string if null
+				String boomLock = rs.getString("Boom_Lock");
+				if (boomLock == null) {
+					boomLock = "";
+				}
+				customer.setBoomLock(boomLock);
+						
+				return customer;
+			}
+		});
+
+
+	}
+
+	public  List<Reports> findByUsernamegm(String username,String role) {
+
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		parameters.addValue("username", username);
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd 00:00:00");
+		String user="";
+		System.out.println(username.indexOf('s'));
+
+		String  query = "";
+		if (role.indexOf('s')!=-1) {
+			query = "select * from reports where sm=(:username) and added_on>(:added_on) order by id DESC" ;	
+
+		}
+		else if(role.indexOf('g')!=-1)
+		{
+			query = "select * from reports where gm=(:username) and added_on>(:added_on) order by id DESC" ;
+			System.out.println("GetReportsgqdfdfdf"+query);
+
+
+		}
+
+		parameters.addValue("user", user);
+
+		try {
+			Date today = Calendar.getInstance().getTime();
+			today.setHours(0);
+			today.setMinutes(0);
+			today.setSeconds(0);
+			// Using DateFormat format method we can create a string 
+			// representation of a date with the defined format.
+			String todayAsString = formatter.format(today);
+
+			Date date1 =formatter.parse(todayAsString);
+
+			parameters.addValue("added_on", todayAsString);
+
+		} catch (ParseException e) {
+			e.printStackTrace();
+		}
+		List<Reports> li = jdbcTemplate.query(query,parameters, new RowMapper<Reports>() {
+			@Override
+			public Reports mapRow(ResultSet rs, int i) throws SQLException {
+				Reports customer = new Reports();
+				String ackn = rs.getString("ackn");
+				String lc_stat = rs.getString("lc_status");
+				String lc_pin = rs.getString("lc_pin");
+				String lc_name = rs.getString("lc_name");
+				customer.setLc(rs.getString("lc"));
+				
+				// Handle null for lc_lock_time
+				String lc_lock_time = rs.getString("lc_lock_time");
+				if(lc_lock_time == null) {
+					lc_lock_time = "";
+				}
+				
+				// Handle null for lc_open_time
+				String lc_open_time = rs.getString("lc_open_time");
+				if(lc_open_time == null) {
+					lc_open_time = "";
+				}
+				
+                String tn = rs.getString("tn");
+                if(tn != null && tn.length()>5) {
+                	tn = tn.substring(0,5);
+                }
+                if(tn == null) {
+                	tn = "";
+                }
+				//customer.setId(rs.getInt("id"));
+                customer.setId(i+1);
+				customer.setLc_name(lc_name);
+				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
+				customer.setCommand(rs.getString("command"));
+				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				
+				// Handle null for lc_stat
+				if(lc_stat == null) {
+					lc_stat = "";
+				}
+				
+				if(lc_stat.equalsIgnoreCase("Closed")) {
+					customer.setLc_status(lc_stat+"" + "["+lc_lock_time+"]");
+				} else {
+					customer.setLc_status(lc_stat+"" + "["+lc_open_time+"]");
+				}
+				customer.setLc_lock_time(lc_lock_time);
+				
+				// Handle null for lc_pin
+				if(lc_pin == null) {
+					lc_pin = "";
+				}
+				
+				// Handle null for lc_pin_time
+				String lc_pin_time = rs.getString("lc_pin_time");
+				if(lc_pin_time == null) {
+					lc_pin_time = "";
+				}
+				
+				customer.setLc_pin(lc_pin+"" + "["+lc_pin_time+"]");
+				// Ensure ackn is properly set (handle null case)
+				customer.setAckn(ackn != null ? ackn : "");
+				customer.setSm(rs.getString("sm"));
+				// Handle null for lc_open_time
+				String lc_open_time_val = rs.getString("lc_open_time");
+				if(lc_open_time_val == null) {
+					lc_open_time_val = "";
+				}
+				customer.setLc_open_time(lc_open_time_val);
+				
+				// Handle null for Boom_Lock - set to empty string if null
+				String boomLock = rs.getString("Boom_Lock");
+				if (boomLock == null) {
+					boomLock = "";
+				}
+				customer.setBoomLock(boomLock);
+				
+				return customer;
+			}
+		});
+		
+		/*String query1 = "select * from reports where sm=(:sm) and lc=(:lc) and added_on>(:added_on) and gm='' and redy='s' order by id DESC" ;	
+
+		if(li.size()<0) {
+			return li;
+		}else {
+			parameters.addValue("sm", li.get(0).getSm());
+			parameters.addValue("lc",li.get(0).getLc() );
+		}
+
+		List<Reports> li1 = jdbcTemplate.query(query1,parameters, new RowMapper<Reports>() {
+			@Override
+			public Reports mapRow(ResultSet rs, int i) throws SQLException {
+				Reports customer = new Reports();
+				String lc_stat = rs.getString("lc_status");
+				String lc_name = rs.getString("lc_name");
+				customer.setId(rs.getInt("id"));
+				customer.setLc_name(lc_name);
+				customer.setLc_status(lc_stat);
+				customer.setLc_lock_time(rs.getString("lc_lock_time"));
+				customer.setLc(rs.getString("lc"));
+				
+				return customer;
+			}
+		});
+        int k = 0;
+		for(int i = 0 ; i<li.size();i++) {
+			if(i<li1.size()) {
+			if((li.get(i).getId() < li1.get(k).getId()) && (li.get(i).getLc().equals(li1.get(k).getLc()))) {
+				li.get(i).setLc_open_time(li1.get(k).getLc_lock_time());
+				k++;
+			}
+			}
+			li.get(i).setLc_status(li.get(i).getLc_status()+" "+"["+li.get(i).getLc_lock_time()+"]");
+
+		}*/
+		
+		return li;
+
+	}
+
+
+	public void add(Reports reports) {
+		String pattern = "yyyy-MM-dd hh:mm:ss";
+		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+
+		jdbcTemplate1.update("insert into reports (tn, pn,tn_time,command,wer,sm,gm,lc,lc_name,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,added_on,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+				reports.getTn(),
+				reports.getPn(),
+				reports.getTn_time(),
+				reports.getCommand(),
+				reports.getWer(),
+				reports.getSm(),
+				reports.getGm(),
+				reports.getLc(),
+				reports.getLc_name(),
+				reports.getLc_status(),
+				reports.getLc_lock_time(),
+				reports.getLc_pin(),
+				reports.getLc_pin_time(),
+				reports.getAckn(),
+				simpleDateFormat.format(reports.getAdded_on()),
+				reports.getLc_open_time(),
+				reports.getRedy());
+
+	}
+	
+	/**
+	 * Get unacknowledged failsafe reports for a given username (SM or GM)
+	 * Returns a list of maps containing id and lc_name (gateId) for all unacknowledged failsafe reports
+	 */
+	public List<Map<String, Object>> getUnacknowledgedFailsafeReports(String username) {
+		try {
+			String query = "SELECT id, lc_name FROM reports WHERE command = 'NO-NETWORK' AND (ackn IS NULL OR ackn = '') AND (sm = ? OR gm = ?) ORDER BY added_on DESC";
+			List<Map<String, Object>> results = jdbcTemplate1.queryForList(query, username, username);
+			return results != null ? results : new java.util.ArrayList<>();
+		} catch (Exception e) {
+			logger.error("Error getting unacknowledged failsafe reports for user: {}", username, e);
+			return new java.util.ArrayList<>();
+		}
+	}
+	
+	/**
+	 * Get gate name from managegates table using BOOM1_ID or Gate_Num
+	 * Returns Gate_Num if found, otherwise returns the input value
+	 * Note: lc_name in reports table may contain either BOOM1_ID (e.g., "E20-750BS") or Gate_Num (e.g., "750")
+	 */
+	public String getGateNameFromGateId(String gateIdOrName) {
+		try {
+			if (gateIdOrName == null || gateIdOrName.isEmpty()) {
+				return gateIdOrName;
+			}
+			// First check if it's already a Gate_Num by searching in managegates
+			String queryByName = "SELECT Gate_Num FROM managegates WHERE Gate_Num = ? LIMIT 1";
+			List<Map<String, Object>> nameResults = jdbcTemplate1.queryForList(queryByName, gateIdOrName);
+			if (nameResults != null && !nameResults.isEmpty()) {
+				// It's already a Gate_Num, return it
+				return gateIdOrName;
+			}
+			// If not found as Gate_Num, try to find it as BOOM1_ID or handle
+			String query = "SELECT Gate_Num FROM managegates WHERE BOOM1_ID = ? OR handle = ? LIMIT 1";
+			List<Map<String, Object>> results = jdbcTemplate1.queryForList(query, gateIdOrName, gateIdOrName);
+			if (results != null && !results.isEmpty()) {
+				Object gateNameObj = results.get(0).get("Gate_Num");
+				if (gateNameObj != null) {
+					return gateNameObj.toString();
+				}
+			}
+		} catch (Exception e) {
+			logger.error("Error getting gate name for BOOM1_ID/Name: {}", gateIdOrName, e);
+		}
+		// If not found, return input value as fallback (might already be a Gate_Num)
+		return gateIdOrName;
+	}
+	
+	/**
+	 * Get failsafe response data for a given username (SM or GM)
+	 * Returns FailsafeResponse with report IDs and formatted play commands
+	 * This method handles deduplication of gate names and formatting of messages
+	 */
+	public com.jsinfotech.Domain.FailsafeResponse getFailsafeResponseData(String username) {
+		com.jsinfotech.Domain.FailsafeResponse response = new com.jsinfotech.Domain.FailsafeResponse();
+		try {
+			if (username == null || username.isEmpty()) {
+				response.setPlay_command(new java.util.ArrayList<>());
+				response.setReportid(new java.util.ArrayList<>());
+				return response;
+			}
+			
+			java.util.List<java.util.Map<String, Object>> failsafeReports = getUnacknowledgedFailsafeReports(username);
+			if (failsafeReports != null && !failsafeReports.isEmpty()) {
+				java.util.List<String> playCommands = new java.util.ArrayList<>();
+				java.util.List<Integer> reportIds = new java.util.ArrayList<>();
+				java.util.Set<String> seenGateNames = new java.util.HashSet<>(); // Track unique gate names for deduplication
+				
+				for (java.util.Map<String, Object> report : failsafeReports) {
+					Object idObj = report.get("id");
+					Object lcNameObj = report.get("lc_name");
+					
+					if (idObj != null && lcNameObj != null) {
+						Integer reportId = null;
+						if (idObj instanceof Integer) {
+							reportId = (Integer) idObj;
+						} else if (idObj instanceof Number) {
+							reportId = ((Number) idObj).intValue();
+						}
+						
+						// Always add report ID to the list
+						if (reportId != null) {
+							reportIds.add(reportId);
+						}
+						
+						String gateId = lcNameObj.toString();
+						// Get gate name from managegates table
+						String gateName = getGateNameFromGateId(gateId);
+						
+						// Deduplicate: only add message if we haven't seen this gate name before
+						if (gateName != null && !gateName.isEmpty() && !seenGateNames.contains(gateName)) {
+							seenGateNames.add(gateName);
+							// Format message: "LC {gateName} No network ,Operate with Manual PN"
+							String message = "LC " + gateName + " No network ,Operate with Manual PN";
+							playCommands.add(message);
+						}
+					}
+				}
+				
+				response.setPlay_command(playCommands);
+				response.setReportid(reportIds);
+			} else {
+				// No unacknowledged failsafe, return empty (no buzz)
+				response.setPlay_command(new java.util.ArrayList<>());
+				response.setReportid(new java.util.ArrayList<>());
+			}
+		} catch (Exception e) {
+			System.err.println("Error getting failsafe response data for user: " + username);
+			e.printStackTrace();
+			response.setPlay_command(new java.util.ArrayList<>());
+			response.setReportid(new java.util.ArrayList<>());
+		}
+		return response;
+	}
+	
+	/**
+	 * Update acknowledgement for a failsafe report
+	 * Returns true if update was successful, false otherwise
+	 */
+	public boolean updateFailsafeAck(int reportId, String ackn) {
+		try {
+			int updated = jdbcTemplate1.update(
+				"UPDATE reports SET ackn = ? WHERE id = ? AND command = 'NO-NETWORK'",
+				ackn, reportId
+			);
+			return updated > 0;
+		} catch (Exception e) {
+			System.err.println("Error updating failsafe acknowledgement for report: " + reportId);
+			e.printStackTrace();
+			return false;
+		}
+	}
+
+	public void addOpen(String username,String rolename) {
+		
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		parameters.addValue("username", username);
+		String  query = "";
+		if (rolename.equalsIgnoreCase("sm")) {
+			query = "select * from managegates where SM=(:username)";
+
+		}
+		else if(rolename.equalsIgnoreCase("gm"))
+		{
+			query = "select * from managegates where GM=(:username)";
+
+		}
+		int k =1;
+		List<ManageGates> l = jdbcTemplate.query(query,parameters, new RowMapper<ManageGates>() {
+			@Override
+			public ManageGates mapRow(ResultSet rs, int i) throws SQLException {
+				ManageGates customer = new ManageGates();
+				customer.setId(rs.getInt("id"));
+				customer.setStatus(rs.getString("status").toLowerCase());
+				customer.setBoom1Id(rs.getString("BOOM1_ID"));
+				customer.setGateNum(rs.getString("Gate_Num"));
+				customer.setSM(rs.getString("sm"));
+				return customer;
+			}
+		});
+		String pattern = "yyyy-MM-dd HH:mm:ss";
+		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		 String pattern3 = "HH:mm";
+         SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         String time1 = simpleDateFormat3.format(new Date());
+         String time2 = simpleDateFormat.format(new Date());
+         for(ManageGates m:l) {
+		 jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+	                "","",time1,"R-Open","",m.getSM(),username,m.getGateNum(),m.getGateNum(),
+	                time2,"","",getRandomNumberWithExclusion(),time1,"","","ct");
+			ackService.updateQueue(m.getSM(), "ROPN",m.getGateNum());
+
+         }
+         System.out.println(time1);
+		 
+	    System.out.println("In addOpen method");
+
+
+	}
+	
+public void addOpenClose(String command,String username,String gates) {
+	
+		String rolename = "sm";
+		System.out.println(command+username+gates+"inaddOpenClose");
+		
+		String [] str = gates.split(",");
+		String pattern = "yyyy-MM-dd HH:mm:ss";
+		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		 String pattern3 = "HH:mm";
+         SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         String time1 = simpleDateFormat3.format(new Date());
+         
+         String close = "Close";
+         String rclose = "R-Close";
+         String open = "Open";
+         String ropen = "R-Open";
+         HashMap<String,String>map =addcloseandpush(username,"sm");
+         System.out.println("addOpenClose");
+         System.out.println(map);
+         for(String s:str) {
+        	 if("R-Close".equals(command)) {
+        	int i = jdbcTemplate1.update("update reports set tn_time=?, pn=?, command = ? where command = ? and sm=? and lc_name=? and redy=?",new Object[]
+                     {time1,pnGenerationService.generateUniquePNForGate(s),close,rclose,username,s,"ct"}); 
+     		 if(i >= 1) {
+        	 userRepository.poppAudio2(username+"1");
+ 			 ackService.updateQueue(map.get(s), "RECPN",s);
+     		 }
+
+        	 }else {
+        		 int i = jdbcTemplate1.update("update reports set tn_time=?, pn=?, command = ? where command = ? and sm=? and lc_name=? and redy=?",new Object[]
+                         {time1,pnGenerationService.generateUniquePNForGate(s),open,ropen,username,s,"ct"}); 
+        		 if(i >= 1) {
+                	 userRepository.poppAudio2(username+"1");
+          			ackService.updateQueue(map.get(s), "REOPN",s);
+        		 }
+
+        	 }
+         }
+		 
+	    System.out.println("In addOpen method");
+
+
+	}
+	
+	public static int getRandomNumberWithExclusion( )
+	{
+	  Random r = new Random();
+	  int result = -1;
+
+	  do
+	  {
+		  	// 3-digit number, digits 1-9 only (no zeros anywhere)
+		  	result = 111 + r.nextInt(889); // 111..999 inclusive-ish; filtered by isAllowed()
+	  }//do
+	  while( !isAllowed( result ) );
+
+	  return result;
+
+	}//met
+	
+	private static boolean isAllowed( int number )
+	{
+		if (number < 111 || number > 999) {
+			return false;
+		}
+		String s = String.valueOf(number);
+		return s.length() == 3 && s.indexOf('0') < 0;
+	}//met
+	
+	public void addclose(String username,String rolename) {
+		
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		parameters.addValue("username", username);
+		String  query = "";
+		if (rolename.equalsIgnoreCase("sm")) {
+			query = "select * from managegates where SM=(:username)";
+
+		}
+		else if(rolename.equalsIgnoreCase("gm"))
+		{
+			query = "select * from managegates where GM=(:username)";
+
+		}
+		int k =1;
+		List<ManageGates> l = jdbcTemplate.query(query,parameters, new RowMapper<ManageGates>() {
+			@Override
+			public ManageGates mapRow(ResultSet rs, int i) throws SQLException {
+				ManageGates customer = new ManageGates();
+				customer.setId(rs.getInt("id"));
+				customer.setStatus(rs.getString("status").toLowerCase());
+				customer.setBoom1Id(rs.getString("BOOM1_ID"));
+				customer.setGateNum(rs.getString("Gate_Num"));
+				customer.setSM(rs.getString("sm"));
+				return customer;
+			}
+		});
+		String pattern = "yyyy-MM-dd HH:mm:ss";
+		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		 String pattern3 = "HH:mm";
+         SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         String time1 = simpleDateFormat3.format(new Date());
+         String time2 = simpleDateFormat.format(new Date());
+
+         for(ManageGates m:l) {
+		 jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+	                "","",time1,"R-Close","",m.getSM(),username,m.getGateNum(),m.getGateNum(),
+	                time2,"","",getRandomNumberWithExclusion(),time1,"","","ct");
+			ackService.updateQueue(m.getSM(), "RCPN",m.getGateNum());
+
+         }
+		 
+	    System.out.println("In addOpen method");
+
+	}
+
+	
+public HashMap<String,String> addcloseandpush(String username,String rolename) {
+		
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		parameters.addValue("username", username);
+		String  query = "";
+		if (rolename.equalsIgnoreCase("sm")) {
+			query = "select * from managegates where SM=(:username)";
+
+		}
+
+		int k =1;
+		HashMap<String,String> hash = new HashMap<String,String>();
+		
+		List<ManageGates> l = jdbcTemplate.query(query,parameters, new RowMapper<ManageGates>() {
+			@Override
+			public ManageGates mapRow(ResultSet rs, int i) throws SQLException {
+				ManageGates customer = new ManageGates();
+				customer.setId(rs.getInt("id"));
+				customer.setStatus(rs.getString("status").toLowerCase());
+				customer.setBoom1Id(rs.getString("BOOM1_ID"));
+				customer.setGateNum(rs.getString("Gate_Num"));
+				customer.setSM(rs.getString("sm"));
+				hash.put(rs.getString("Gate_Num"), rs.getString("gm"));
+				return customer;
+			}
+		});
+		
+	    System.out.println("In addcloseandpush method");
+	    return hash;
+
+	}
+
+	public List<Reports> findreports(String username,String role, String from, String to) {
+		System.out.println("In findreports method");
+		MapSqlParameterSource parameters = new MapSqlParameterSource();
+		Reports dates=  new Reports();
+		dates.setFrom(from);
+		dates.setTo(to);
+		parameters.addValue("username", username);
+		parameters.addValue("from", dates.getFrom());
+		parameters.addValue("to",  dates.getTo());
+		System.out.println("jsinfo date::"+"added_on");
+
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
+		try {
+			Date fromdate=formatter.parse(from);
+			Date todate=formatter.parse(to);
+			System.out.println(dates.getFrom()+"from date");
+			System.out.println(dates.getTo()+"to date");
+
+		} catch (ParseException e1) {
+			e1.printStackTrace();
+		}
+		System.out.println(username.indexOf('s'));
+
+		String  query = "";
+		if (role.indexOf('s')!=-1) {
+			query = "select * from reports where sm=(:username) and added_on>=(:from) and added_on<=(:to)  order by id DESC" ;	
+
+		}
+		else if(role.indexOf('g')!=-1)
+		{
+			query = "select * from reports where gm=(:username) and added_on>=(:from) and added_on<=(:to)  order by id DESC" ;	
+
+		}
+
+
+
+		List<Reports> li = jdbcTemplate.query(query,parameters, new RowMapper<Reports>() {
+			@Override
+			public Reports mapRow(ResultSet rs, int i) throws SQLException {
+				Reports customer = new Reports();
+				String ackn = rs.getString("ackn");
+				String lc_stat = rs.getString("lc_status");
+				String lc_pin = rs.getString("lc_pin");
+				String lc_name = rs.getString("lc_name");
+				customer.setLc(rs.getString("lc"));
+				
+				// Handle null for lc_lock_time
+				String lc_lock_time = rs.getString("lc_lock_time");
+				if(lc_lock_time == null) {
+					lc_lock_time = "";
+				}
+				
+				// Handle null for lc_open_time
+				String lc_open_time = rs.getString("lc_open_time");
+				if(lc_open_time == null) {
+					lc_open_time = "";
+				}
+				
+                String tn = rs.getString("tn");
+                if(tn != null && tn.length()>5) {
+                	tn = tn.substring(0,5);
+                }
+                if(tn == null) {
+                	tn = "";
+                }
+				//customer.setId(rs.getInt("id"));
+                customer.setId(i);
+				customer.setLc_name(lc_name);
+				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
+				customer.setCommand(rs.getString("command"));
+				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				
+				// Handle null for lc_stat
+				if(lc_stat == null) {
+					lc_stat = "";
+				}
+				
+				if(lc_stat.equalsIgnoreCase("Closed")) {
+					customer.setLc_status(lc_stat+"" + "["+lc_lock_time+"]");
+				} else {
+					customer.setLc_status(lc_stat+"" + "["+lc_open_time+"]");
+				}
+				customer.setLc_lock_time(lc_lock_time);
+				
+				// Handle null for lc_pin
+				if(lc_pin == null) {
+					lc_pin = "";
+				}
+				
+				// Handle null for lc_pin_time
+				String lc_pin_time = rs.getString("lc_pin_time");
+				if(lc_pin_time == null) {
+					lc_pin_time = "";
+				}
+				
+				customer.setLc_pin(lc_pin+"" + "["+lc_pin_time+"]");
+				customer.setAckn(ackn);
+				customer.setSm(rs.getString("sm"));
+				customer.setLc_open_time("[ "+lc_open_time+" ]");
+				
+				// Handle null for Boom_Lock - set to empty string if null
+				String boomLock2 = rs.getString("Boom_Lock");
+				if (boomLock2 == null) {
+					boomLock2 = "";
+				}
+				customer.setBoomLock(boomLock2);
+				
+				
+				return customer;
+			}
+		});
+		
+		return li;
+
+	}
+
+
+
+	public   Boolean getReportstatus(String username,String gateid,String status) {
+		
+	   // ManageGates managegates = jdbcTemplate1.queryForObject("select * from managegates where BOOM1_ID=?", new Object[] { gateid },new BeanPropertyRowMapper<ManageGates>(ManageGates.class));
+	   // System.out.println("DDDD"+managegates);
+		
+		//AcknowledgementService.updateQueue(username,status,gateid);
+
+		return true;
+	
+	}
+
+
+
+}

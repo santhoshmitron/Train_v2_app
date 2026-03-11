@@ -1,0 +1,22 @@
+object Versions {
+  val akkaV = "2.5.13"
+  val akkaHttpV = "10.1.3"
+  val squbsV = "0.11.0"
+  val jacksonV = "2.9.5"
+  val akkaHttpJacksonV = "1.17.0"
+  val junitV = "4.12"
+  val scalaJavaCompatV = "0.7.0"
+  val logbackClassicV = "1.1.3"
+  val scalatestV = "3.0.5"
+  val scalaLoggingV = "3.9.0"
+
+  val json4sV = "3.5.3"
+  val heikoseebergerAkkaHttpJsonV = "1.20.1"
+  val metricsV = "4.0.2"
+  val junitInterfaceV = "0.11"
+  val testngV = "6.14.3"
+  val accordV = "0.7.2"
+  val chronicleQueueV = "4.16.5"
+  val logbackInTestV = "1.2.3"
+  val curatorV = "4.0.1"
+}

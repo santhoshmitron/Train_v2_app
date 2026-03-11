@@ -1,0 +1,73 @@
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.out</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] [%-5level] %logger{50} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--<appender name="FILE" class="ch.qos.logback.core.rolling.FileAppender">-->
+    <!--<file>./logs/akka.log</file>-->
+    <!--<append>false</append>-->
+    <!--<encoder>-->
+    <!--<pattern>%d{HH:mm:ss.SSS} [%thread] [%-5level] %logger{50} %msg%n</pattern>-->
+    <!--</encoder>-->
+    <!--</appender>-->
+
+
+    <appender name="rollingFile" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>./logs/jtrack.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>./logs/jtrack-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>3</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%-5level] %logger{50} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+
+
+
+    <root level="DEBUG">
+        <appender-ref ref="FILE"/>
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="rollingFile" />
+    </root>
+
+    <logger name="org.apache.kafka" level="INFO">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="rollingFile" />
+    </logger>
+
+
+    <logger name="org.apache.kafka.common.metrics" level="INFO">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="rollingFile" />
+    </logger>
+
+
+    <logger name="org.apache.kafka.clients.consumer" level="INFO">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="rollingFile" />
+    </logger>
+
+    <logger name="akka.cluster.sharding.ShardRegion" level="INFO">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="rollingFile" />
+    </logger>
+
+    <logger name="com.github.levkhomich.akka.tracing" level="INFO">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="rollingFile"/>
+    </logger>
+
+
+</configuration>
