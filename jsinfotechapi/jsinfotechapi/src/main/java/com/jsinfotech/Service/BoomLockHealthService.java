@@ -231,7 +231,7 @@ public class BoomLockHealthService {
                                 String recentClosedSql =
                                     "SELECT id FROM reports " +
                                     "WHERE (lc IN (?,?) OR lc_name IN (?,?)) " +
-                                    "AND UPPER(command)='CLOSED' " +
+                                    "AND UPPER(lc_status)='CLOSED' " +
                                     "AND added_on >= DATE_SUB(NOW(), INTERVAL 10 MINUTE) " +
                                     "ORDER BY added_on DESC LIMIT 1";
                                 List<java.util.Map<String, Object>> recentClosedRows =
@@ -329,7 +329,7 @@ public class BoomLockHealthService {
                             String checkExistingSql =
                                 "SELECT COUNT(*) as cnt FROM reports " +
                                 "WHERE (lc IN (?,?) OR lc_name IN (?,?)) " +
-                                "AND (UPPER(command)='CLOSED' OR UPPER(command)='CLOSE') " +
+                                "AND UPPER(lc_status)='CLOSED' " +
                                 "AND Boom_Lock IS NOT NULL AND Boom_Lock != '' " +
                                 "AND added_on >= DATE_SUB(NOW(), INTERVAL 1 HOUR)";
                             List<java.util.Map<String, Object>> existingRows = jdbcTemplate1.queryForList(
@@ -444,7 +444,7 @@ public class BoomLockHealthService {
                                 String findLatestReportSql =
                                     "SELECT id, added_on, Boom_Lock FROM reports " +
                                     "WHERE (lc IN (?,?) OR lc_name IN (?,?)) " +
-                                    "AND (UPPER(command)='CLOSED' OR UPPER(command)='CLOSE') " +
+                                    "AND UPPER(lc_status)='CLOSED' " +
                                     "AND added_on >= DATE_SUB(NOW(), INTERVAL 10 MINUTE) " +
                                     "ORDER BY added_on DESC, id DESC LIMIT 1";
                                 List<java.util.Map<String, Object>> latestReportRows = jdbcTemplate1.queryForList(
@@ -789,7 +789,7 @@ public class BoomLockHealthService {
                 "AND EXISTS (" +
                 "    SELECT 1 FROM reports r " +
                 "    WHERE (r.lc = mg.BOOM1_ID OR r.lc_name = mg.BOOM1_ID OR r.lc = mg.Gate_Num OR r.lc_name = mg.Gate_Num) " +
-                "    AND (UPPER(r.command) = 'CLOSED' OR UPPER(r.command) = 'CLOSE') " +
+                "    AND UPPER(r.lc_status) = 'CLOSED' " +
                 "    AND r.added_on >= DATE_SUB(NOW(), INTERVAL 1 HOUR)" +
                 ")";
             
@@ -841,7 +841,7 @@ public class BoomLockHealthService {
                     String findLatestReportSql =
                         "SELECT id, added_on, Boom_Lock FROM reports " +
                         "WHERE (lc IN (?,?) OR lc_name IN (?,?)) " +
-                        "AND (UPPER(command)='CLOSED' OR UPPER(command)='CLOSE') " +
+                        "AND UPPER(lc_status)='CLOSED' " +
                         "AND added_on >= DATE_SUB(NOW(), INTERVAL 10 MINUTE) " +
                         "ORDER BY added_on DESC, id DESC LIMIT 1";
                     

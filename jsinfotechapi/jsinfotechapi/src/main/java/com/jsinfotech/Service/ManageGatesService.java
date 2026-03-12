@@ -258,18 +258,34 @@ public class ManageGatesService {
 			  // Only set reportId and pn when status is "closed"
 			  String currentStatus = m.getStatus();
 			  if(currentStatus != null && currentStatus.equalsIgnoreCase("closed")) {
-				  String id = checkstatus(username,m.getBoom1Id());
-				  
-				  // If checkstatus didn't find a report, try a more flexible query
-				  if(id == null) {
-					  id = findRecentClosedReport(username, m.getBoom1Id());
-				  }
+				  // Always use the LATEST Closed report row for this gate (by lc_status),
+				  // not an older "pending PN" row. This ensures getstatus returns the latest reportId only.
+				  String id = findLatestClosedReportIdForGate(username, m.getBoom1Id(), m.getGateNum());
 				  
 				   if(id!=null) {
 					 // Set reportId field (previously misused as bs1Go)
 					 m.setReportId(id);
 					 // Keep bs1Go for backward compatibility (internal use only)
 					 m.setBs1Go(id);
+					 
+					 // Only expose gm_pn when the selected reportId has a train number (tn).
+					 // If tn is empty, return gm_pn as null and do not generate/store expected GM PN.
+					 boolean hasTn = reportHasNonEmptyTn(id);
+					 if (!hasTn) {
+						 m.setPn(null);
+						 m.setBs1Gc(null);
+						 continue;
+					 }
+
+					 // If lc_pin is already set for this report, GM PN has already been applied/sent.
+					 // Do not show/generate a new gm_pn for the same reportId.
+					 boolean hasLcPin = reportHasNonEmptyLcPin(id);
+					 if (hasLcPin) {
+						 m.setPn(null);
+						 m.setBs1Gc(null);
+						 continue;
+					 }
+					 
 					 // GM expected PN (for lc_pin). This must be different from SM PN stored in reports.pn.
 					 String st = userRepository.findReportIdGmPN(id);
 					 
@@ -365,6 +381,85 @@ public class ManageGatesService {
 		}
 
         return l;
+	}
+
+	/**
+	 * Return the latest reports.id for this GM + gate where lc_status is Closed (case-insensitive).
+	 * Uses both BOOM1_ID and Gate_Num matches against reports.lc and reports.lc_name.
+	 * This is used for GM getstatus response so we always show ONLY the latest reportId per gate.
+	 */
+	private String findLatestClosedReportIdForGate(String gmUsername, String boom1Id, String gateNum) {
+		try {
+			// Prefer BOOM1_ID, but include Gate_Num as well since reports might store either in lc/lc_name.
+			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
+			String gn = (gateNum != null) ? gateNum.trim() : "";
+			if (b1.isEmpty() && gn.isEmpty()) {
+				return null;
+			}
+			
+			String sql =
+				"SELECT id FROM reports " +
+				"WHERE gm = ? " +
+				"AND UPPER(lc_status) = 'CLOSED' " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
+				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+				"ORDER BY added_on DESC, id DESC " +
+				"LIMIT 1";
+			
+			// Use empty strings safely; IN (?,?) with "" will just not match anything.
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gmUsername, b1, gn, b1, gn);
+			if (rows == null || rows.isEmpty()) {
+				return null;
+			}
+			Object idObj = rows.get(0).get("id");
+			return idObj != null ? idObj.toString() : null;
+		} catch (Exception e) {
+			logger.warn("Error finding latest Closed reportId for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
+			return null;
+		}
+	}
+	
+	/**
+	 * True if reports.tn is non-null and non-empty for the given reportId.
+	 */
+	private boolean reportHasNonEmptyTn(String reportId) {
+		try {
+			if (reportId == null || reportId.trim().isEmpty()) {
+				return false;
+			}
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList("SELECT tn FROM reports WHERE id=? LIMIT 1", reportId.trim());
+			if (rows == null || rows.isEmpty()) {
+				return false;
+			}
+			Object tnObj = rows.get(0).get("tn");
+			String tn = tnObj != null ? tnObj.toString() : null;
+			return tn != null && !tn.trim().isEmpty();
+		} catch (Exception e) {
+			logger.warn("Error checking tn for reportId: {}", reportId, e);
+			return false;
+		}
+	}
+	
+	/**
+	 * True if reports.lc_pin is non-null and non-empty for the given reportId.
+	 * If lc_pin is already present, GM PN should NOT be shown/generated again for that report.
+	 */
+	private boolean reportHasNonEmptyLcPin(String reportId) {
+		try {
+			if (reportId == null || reportId.trim().isEmpty()) {
+				return false;
+			}
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList("SELECT lc_pin FROM reports WHERE id=? LIMIT 1", reportId.trim());
+			if (rows == null || rows.isEmpty()) {
+				return false;
+			}
+			Object pinObj = rows.get(0).get("lc_pin");
+			String lcPin = pinObj != null ? pinObj.toString() : null;
+			return lcPin != null && !lcPin.trim().isEmpty();
+		} catch (Exception e) {
+			logger.warn("Error checking lc_pin for reportId: {}", reportId, e);
+			return false;
+		}
 	}
 
 	public List<API> findByUsernameAsAPI(String username, String rolename) {
