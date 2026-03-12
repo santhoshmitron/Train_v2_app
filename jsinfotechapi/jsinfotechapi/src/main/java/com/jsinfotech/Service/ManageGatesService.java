@@ -149,67 +149,76 @@ public class ManageGatesService {
 			m.setId(k);
 			k++;
 			
-			// Populate boom_lock_play_commad field.
+			// Get current gate status
+			String currentStatus = m.getStatus();
+			boolean isClosed = (currentStatus != null && currentStatus.trim().equalsIgnoreCase("closed"));
+			
+			// Populate boom_lock_play_commad field ONLY when status is "closed"
 			// Prefer Redis (latest evaluated Boom_Lock written by BoomLockHealthService), fallback to DB reports query.
-			try {
-				String boom1Id = m.getBoom1Id();
-				String gateNum = m.getGateNum();
-				
-				// 1) Redis-first (key uses canonical BOOM1_ID)
-				String redisBoomLockValue = null;
+			if (isClosed) {
 				try {
-					if (boom1Id != null && !boom1Id.trim().isEmpty()) {
-						String lockStatusKey = "boom:lock:status:" + boom1Id.trim();
-						redisBoomLockValue = userRepository.getHealthCheckTimestamp(lockStatusKey);
-					}
-				} catch (Exception ignore) {
-					// fallback to DB
-				}
-				
-				if (redisBoomLockValue != null && !redisBoomLockValue.trim().isEmpty()) {
-					String v = redisBoomLockValue.trim().toLowerCase();
-					if (v.startsWith("healthy")) {
-						m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is healthy." : "healthy");
-					} else if (v.startsWith("unhealthy")) {
-						m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is unhealthy." : "unhealthy");
-					} else {
-						m.setBoom_lock_play_commad("");
-					}
-				} else {
-					// 2) DB fallback
-					String boomLockQuery = "SELECT Boom_Lock FROM reports WHERE (lc = ? OR lc_name = ?) AND (Boom_Lock IS NOT NULL AND Boom_Lock != '') ORDER BY added_on DESC LIMIT 1";
-				
-					List<Map<String, Object>> boomLockRows = jdbcTemplate1.queryForList(boomLockQuery, boom1Id, boom1Id);
-					if (boomLockRows == null || boomLockRows.isEmpty()) {
-						// Try with gateNum
-						boomLockRows = jdbcTemplate1.queryForList(boomLockQuery, gateNum, gateNum);
+					String boom1Id = m.getBoom1Id();
+					String gateNum = m.getGateNum();
+					
+					// 1) Redis-first (key uses canonical BOOM1_ID)
+					String redisBoomLockValue = null;
+					try {
+						if (boom1Id != null && !boom1Id.trim().isEmpty()) {
+							String lockStatusKey = "boom:lock:status:" + boom1Id.trim();
+							redisBoomLockValue = userRepository.getHealthCheckTimestamp(lockStatusKey);
+						}
+					} catch (Exception ignore) {
+						// fallback to DB
 					}
 					
-					if (boomLockRows != null && !boomLockRows.isEmpty()) {
-						Object boomLockObj = boomLockRows.get(0).get("Boom_Lock");
-						if (boomLockObj != null) {
-							String boomLockValue = boomLockObj.toString().trim();
-							// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
-							if (boomLockValue.toLowerCase().startsWith("healthy")) {
-								m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is healthy." : "healthy");
-							} else if (boomLockValue.toLowerCase().startsWith("unhealthy")) {
-								m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is unhealthy." : "unhealthy");
-							} else {
-								m.setBoom_lock_play_commad(""); // Unknown format
-							}
+					if (redisBoomLockValue != null && !redisBoomLockValue.trim().isEmpty()) {
+						String v = redisBoomLockValue.trim().toLowerCase();
+						if (v.startsWith("healthy")) {
+							m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is healthy." : "healthy");
+						} else if (v.startsWith("unhealthy")) {
+							m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is unhealthy." : "unhealthy");
 						} else {
-							m.setBoom_lock_play_commad(""); // No Boom_Lock found
+							m.setBoom_lock_play_commad(null);
 						}
 					} else {
-						m.setBoom_lock_play_commad(""); // No Boom_Lock found
+						// 2) DB fallback
+						String boomLockQuery = "SELECT Boom_Lock FROM reports WHERE (lc = ? OR lc_name = ?) AND (Boom_Lock IS NOT NULL AND Boom_Lock != '') ORDER BY added_on DESC LIMIT 1";
+					
+						List<Map<String, Object>> boomLockRows = jdbcTemplate1.queryForList(boomLockQuery, boom1Id, boom1Id);
+						if (boomLockRows == null || boomLockRows.isEmpty()) {
+							// Try with gateNum
+							boomLockRows = jdbcTemplate1.queryForList(boomLockQuery, gateNum, gateNum);
+						}
+						
+						if (boomLockRows != null && !boomLockRows.isEmpty()) {
+							Object boomLockObj = boomLockRows.get(0).get("Boom_Lock");
+							if (boomLockObj != null) {
+								String boomLockValue = boomLockObj.toString().trim();
+								// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
+								if (boomLockValue.toLowerCase().startsWith("healthy")) {
+									m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is healthy." : "healthy");
+								} else if (boomLockValue.toLowerCase().startsWith("unhealthy")) {
+									m.setBoom_lock_play_commad(gateNum != null && !gateNum.trim().isEmpty() ? gateNum.trim() + " boom lock is unhealthy." : "unhealthy");
+								} else {
+									m.setBoom_lock_play_commad(null); // Unknown format
+								}
+							} else {
+								m.setBoom_lock_play_commad(null); // No Boom_Lock found
+							}
+						} else {
+							m.setBoom_lock_play_commad(null); // No Boom_Lock found
+						}
 					}
+				} catch (Exception e) {
+					logger.warn("Error querying Boom_Lock for gate: {} (BOOM1_ID: {}): {}", m.getGateNum(), m.getBoom1Id(), e.getMessage());
+					m.setBoom_lock_play_commad(null); // Set null on error
 				}
-			} catch (Exception e) {
-				logger.warn("Error querying Boom_Lock for gate: {} (BOOM1_ID: {}): {}", m.getGateNum(), m.getBoom1Id(), e.getMessage());
-				m.setBoom_lock_play_commad(""); // Set empty on error
+			} else {
+				// Status is "open" or not "closed", set boom_lock_play_commad to null
+				m.setBoom_lock_play_commad(null);
 			}
 			
-			// Populate failsafe status and play_command for each gate
+			// Populate failsafe status (play_command field removed)
 			try {
 				String boom1Id = m.getBoom1Id();
 				String gateNum = m.getGateNum();
@@ -220,31 +229,9 @@ public class ManageGatesService {
 				
 				boolean isFailsafe = (failsafeCount != null && failsafeCount > 0);
 				m.setIs_failsafe(isFailsafe);
-				
-				// Get play_command for this specific gate
-				if (isFailsafe) {
-					String playCommandQuery = "SELECT id, lc_name FROM reports WHERE command='NO-NETWORK' AND (lc_name = ? OR lc = ?) AND (ackn IS NULL OR ackn = '') ORDER BY added_on DESC LIMIT 1";
-					List<Map<String, Object>> playCommandRows = jdbcTemplate1.queryForList(playCommandQuery, gateNum, boom1Id);
-					
-					if (playCommandRows == null || playCommandRows.isEmpty()) {
-						// Try with boom1Id as lc_name
-						playCommandRows = jdbcTemplate1.queryForList(playCommandQuery, boom1Id, boom1Id);
-					}
-					
-					java.util.List<String> playCommands = new java.util.ArrayList<>();
-					if (playCommandRows != null && !playCommandRows.isEmpty()) {
-						// Format message: "LC {gateName} No network ,Operate with Manual PN"
-						String message = "LC " + gateNum + " No network ,Operate with Manual PN";
-						playCommands.add(message);
-					}
-					m.setPlay_command(playCommands);
-				} else {
-					m.setPlay_command(new java.util.ArrayList<>());
-				}
 			} catch (Exception e) {
 				logger.warn("Error querying failsafe status for gate: {} (BOOM1_ID: {}): {}", m.getGateNum(), m.getBoom1Id(), e.getMessage());
 				m.setIs_failsafe(false);
-				m.setPlay_command(new java.util.ArrayList<>());
 			}
 		}
 		if(rolename.indexOf('s')!=-1) {

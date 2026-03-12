@@ -135,7 +135,7 @@ public class SMFailsafeService {
             // --------------------------------------------------------------------
             // 2. Load ALL managegates data in ONE query
             // --------------------------------------------------------------------
-            String mgSql = "SELECT BOOM1_ID, handle, Gate_Num, SM, GM FROM managegates";
+            String mgSql = "SELECT BOOM1_ID, BOOM2_ID, handle, Gate_Num, SM, GM FROM managegates";
             List<Map<String, Object>> mgRows = jdbcTemplate.queryForList(mgSql);
             
             // Build maps: Gate_Num → List<sensorIds>, Gate_Num → (SM, GM), sensorId → Gate_Num
@@ -145,12 +145,14 @@ public class SMFailsafeService {
             
             for (Map<String, Object> row : mgRows) {
                 Object boom1IdObj = row.get("BOOM1_ID");
+                Object boom2IdObj = row.get("BOOM2_ID");
                 Object handleObj = row.get("handle");
                 Object gateNumObj = row.get("Gate_Num");
                 Object smObj = row.get("SM");
                 Object gmObj = row.get("GM");
                 
                 String boom1Id = boom1IdObj != null ? boom1IdObj.toString() : null;
+                String boom2Id = boom2IdObj != null ? boom2IdObj.toString() : null;
                 String handle = handleObj != null ? handleObj.toString() : null;
                 String gateNum = gateNumObj != null ? gateNumObj.toString() : null;
                 String sm = smObj != null ? smObj.toString() : "";
@@ -165,6 +167,10 @@ public class SMFailsafeService {
                 if (boom1Id != null && !boom1Id.isEmpty()) {
                     sensorsByGateName.get(gateNum).add(boom1Id);
                     gateNameBySensorId.put(boom1Id, gateNum);
+                }
+                if (boom2Id != null && !boom2Id.isEmpty()) {
+                    sensorsByGateName.get(gateNum).add(boom2Id);
+                    gateNameBySensorId.put(boom2Id, gateNum);
                 }
                 if (handle != null && !handle.isEmpty()) {
                     sensorsByGateName.get(gateNum).add(handle);
@@ -218,21 +224,22 @@ public class SMFailsafeService {
                 
                 try {
                     // --------------------------------------------------------------------
-                    // 4A. Check if ANY sensor (BS1, BS2, LS) has recent data
+                    // 4A. Check if ALL sensors (BS1, BS2, LS) have recent data
                     // --------------------------------------------------------------------
-                    boolean anySensorHasRecentData = false;
+                    boolean allSensorsHaveRecentData = true;
                     for (String sensorId : sensorIds) {
                         Long lastUpdateTime = userRepository.getGateLastUpdateTime(sensorId);
-                        if (lastUpdateTime != null && (currentTime - lastUpdateTime) <= failsafeTimeoutMs) {
-                            anySensorHasRecentData = true;
+                        if (lastUpdateTime == null || (currentTime - lastUpdateTime) > failsafeTimeoutMs) {
+                            // This sensor is missing data or data is stale
+                            allSensorsHaveRecentData = false;
                             break;
                         }
                     }
                     
                     // --------------------------------------------------------------------
-                    // 4B. If ANY sensor has recent data → mark gate as recovered and evict failsafe from Redis
+                    // 4B. If ALL sensors have recent data → mark gate as recovered and evict failsafe from Redis
                     // --------------------------------------------------------------------
-                    if (anySensorHasRecentData) {
+                    if (allSensorsHaveRecentData) {
                         // Values came back - remove failsafe state and acknowledge any existing failsafe reports
                         // This allows a new failsafe report to be created if values stop again
                         for (String sensorId : sensorIds) {
@@ -272,12 +279,12 @@ public class SMFailsafeService {
                             logger.warn("Error acknowledging NO-NETWORK reports for gateName: {}", gateName, ackEx);
                         }
                         
-                        logger.debug("At least one sensor has recent data for gateName: {}, evicted NO-NETWORK failsafe", gateName);
+                        logger.debug("All sensors have recent data for gateName: {}, evicted NO-NETWORK failsafe", gateName);
                         continue;
                     }
                     
                     // --------------------------------------------------------------------
-                    // 4C. If ALL sensors (BS1, BS2, LS) have NO recent data → check if already logged, then log if needed
+                    // 4C. If ANY sensor (BS1, BS2, LS) is missing recent data → check if already logged, then log if needed
                     // --------------------------------------------------------------------
                     // Store failsafe details in Redis for all sensorIds (BS and LS)
                     for (String sensorId : sensorIds) {
@@ -334,7 +341,10 @@ public class SMFailsafeService {
                     }
                     
                     // Log NO-NETWORK only if no existing report found (print only once)
-                    if (shouldLogReport && (sm != null || !sm.isEmpty() || gm != null || !gm.isEmpty())) {
+                    // and we have at least one owner (SM or GM) available.
+                    // (Old condition used `||` with `!sm.isEmpty()` which could be evaluated even when sm is null)
+                    boolean hasOwner = (sm != null && !sm.isEmpty()) || (gm != null && !gm.isEmpty());
+                    if (shouldLogReport && hasOwner) {
                         try {
                             java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
                             formatter.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));

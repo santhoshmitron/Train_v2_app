@@ -84,9 +84,6 @@ public class ManageGates {
     private Boolean is_failsafe;
     private String gate_start_time;
     private String gate_end_time;
-    
-    // Failsafe play_command field
-    private java.util.List<String> play_command;
 	
 	public int getId() {
 		return id;
@@ -259,14 +256,6 @@ public class ManageGates {
 	
 	public void setBoom_lock_play_commad(String boom_lock_play_commad) {
 		this.boom_lock_play_commad = boom_lock_play_commad;
-	}
-	
-	public java.util.List<String> getPlay_command() {
-		return play_command;
-	}
-	
-	public void setPlay_command(java.util.List<String> play_command) {
-		this.play_command = play_command;
 	}
 
 

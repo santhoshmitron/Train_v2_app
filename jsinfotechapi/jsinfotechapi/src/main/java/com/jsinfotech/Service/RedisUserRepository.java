@@ -285,9 +285,12 @@ public class RedisUserRepository {
         long timestamp = System.currentTimeMillis();
         this.redisTemplate.opsForValue().set(key, String.valueOf(timestamp));
         logger.debug("Updated last update time for gate: {}", gateId);
-        
-        // Clear failsafe details if gate was in failsafe mode (gate has recovered)
-        removeFailsafeGateDetails(gateId);
+        // NOTE:
+        // Do NOT clear failsafe details here.
+        // For a gate, we track failsafe per-sensor (BS1/BS2/LS). With "failsafe if ANY sensor missing",
+        // a single sensor update does NOT mean the gate recovered.
+        // Recovery + eviction of failsafe state must be handled centrally in SMFailsafeService
+        // when ALL sensors for the gate are healthy again.
     }
     
     /**
