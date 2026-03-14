@@ -51,36 +51,40 @@ public class ReportsController {
 				return report;
 					
 				}else if(role.indexOf('g')!=-1) {
+					// Get Redis audio only (play commands moved to getstatus API)
 					String com = userRepository.poppAudio(username);
-					//String com = "1";
-				    commands.add(com);
+					if (com != null && !com.trim().isEmpty()) {
+						commands.add(com);
+					}
+					
+					// Remove empty strings
+					commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
+					
 					report.setPlay_command(commands);
 					report.setReport(Service.findByUsernamegm(username,role));
 					System.out.println("GetReportsg"+username+role);
 
 					return report;
 				}else {
+					  // Get Redis audio only (play commands moved to getstatus API)
 					  String com = userRepository.poppAudio(username);
 					  String com1 = userRepository.poppAudio1(username);
-				    if(com.equals("") && com1.equals("")) {
-				    	commands.add(com);
-				    }
-				    else if(com.equals("") && !com1.equals("")) {
-				    	commands.add(com1);
-				    }
-				    else if(com.equals("") && !com1.equals("")) {
-				    	commands.add(com1);
-				    }
-				    else if(!com.equals("") && com1.equals("")) {
-				    	commands.add(com);
-				    }
-				    else if(!com.equals("") && !com1.equals("")) {
-				    	commands.add(com);
-				    }
-					report.setPlay_command(commands);
-					logger.info("GetReportsm"+username+role);
-					report.setReport(Service.findByUsername(username,role));
-					return report;
+					  
+					  // Add Redis audio (only non-empty)
+					  if (com != null && !com.trim().isEmpty()) {
+						  commands.add(com);
+					  }
+					  if (com1 != null && !com1.trim().isEmpty()) {
+						  commands.add(com1);
+					  }
+					  
+					  // Remove empty strings
+					  commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
+					  
+					  report.setPlay_command(commands);
+					  logger.info("GetReportsm"+username+role);
+					  report.setReport(Service.findByUsername(username,role));
+					  return report;
 				}
 
 				

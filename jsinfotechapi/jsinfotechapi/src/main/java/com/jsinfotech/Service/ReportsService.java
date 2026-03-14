@@ -8,9 +8,11 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -49,18 +51,18 @@ public class ReportsService {
 
 		MapSqlParameterSource parameters = new MapSqlParameterSource();
 		parameters.addValue("username", username);
-		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd 00:00:00");
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 		String user="";
 
 		String  query = "";
 		if (role.indexOf('s')!=-1) {
-			query = "select * from reports where sm=(:username) and added_on>(:added_on) order by id DESC" ;	
+			query = "select * from reports where sm=(:username) and added_on>=(:added_on) order by id DESC" ;	
 			logger.debug("SM reports query: {}", query);
 
 		}
 		else if(role.indexOf('g')!=-1)
 		{
-			query = "select * from reports where gm=(:username) and added_on>(:added_on) order by id DESC" ;	
+			query = "select * from reports where gm=(:username) and added_on>=(:added_on) order by id DESC" ;	
 			logger.debug("GM reports query: {}", query);
 
 		}
@@ -73,20 +75,18 @@ public class ReportsService {
 		parameters.addValue("user", user);
 
 		try {
-			Date today = Calendar.getInstance().getTime();
-			today.setHours(0);
-			today.setMinutes(0);
-			today.setSeconds(0);
-			// Using DateFormat format method we can create a string 
-			// representation of a date with the defined format.
-			String todayAsString = formatter.format(today);
+			// Calculate current time minus 12 hours (instead of today's midnight)
+			Calendar cal = Calendar.getInstance();
+			cal.add(Calendar.HOUR_OF_DAY, -12);  // Subtract 12 hours
+			Date twelveHoursAgo = cal.getTime();
+			String twelveHoursAgoString = formatter.format(twelveHoursAgo);
+			
+			logger.debug("Date filter (last 12 hours): {}", twelveHoursAgoString);
 
-			Date date1 =formatter.parse(todayAsString);
-			logger.debug("Date filter: {}", todayAsString);
+			parameters.addValue("added_on", twelveHoursAgoString);
 
-			parameters.addValue("added_on", todayAsString);
-
-		} catch (ParseException e) {
+		} catch (Exception e) {
+			logger.error("Error calculating 12-hour time window for reports query", e);
 			e.printStackTrace();
 		}
 		return jdbcTemplate.query(query,parameters, new RowMapper<Reports>() {
@@ -167,18 +167,18 @@ public class ReportsService {
 
 		MapSqlParameterSource parameters = new MapSqlParameterSource();
 		parameters.addValue("username", username);
-		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd 00:00:00");
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 		String user="";
 		System.out.println(username.indexOf('s'));
 
 		String  query = "";
 		if (role.indexOf('s')!=-1) {
-			query = "select * from reports where sm=(:username) and added_on>(:added_on) order by id DESC" ;	
+			query = "select * from reports where sm=(:username) and added_on>=(:added_on) order by id DESC" ;	
 
 		}
 		else if(role.indexOf('g')!=-1)
 		{
-			query = "select * from reports where gm=(:username) and added_on>(:added_on) order by id DESC" ;
+			query = "select * from reports where gm=(:username) and added_on>=(:added_on) order by id DESC" ;
 			System.out.println("GetReportsgqdfdfdf"+query);
 
 
@@ -187,19 +187,18 @@ public class ReportsService {
 		parameters.addValue("user", user);
 
 		try {
-			Date today = Calendar.getInstance().getTime();
-			today.setHours(0);
-			today.setMinutes(0);
-			today.setSeconds(0);
-			// Using DateFormat format method we can create a string 
-			// representation of a date with the defined format.
-			String todayAsString = formatter.format(today);
+			// Calculate current time minus 12 hours (instead of today's midnight)
+			Calendar cal = Calendar.getInstance();
+			cal.add(Calendar.HOUR_OF_DAY, -12);  // Subtract 12 hours
+			Date twelveHoursAgo = cal.getTime();
+			String twelveHoursAgoString = formatter.format(twelveHoursAgo);
+			
+			logger.debug("Date filter (last 12 hours): {}", twelveHoursAgoString);
 
-			Date date1 =formatter.parse(todayAsString);
+			parameters.addValue("added_on", twelveHoursAgoString);
 
-			parameters.addValue("added_on", todayAsString);
-
-		} catch (ParseException e) {
+		} catch (Exception e) {
+			logger.error("Error calculating 12-hour time window for reports query", e);
 			e.printStackTrace();
 		}
 		List<Reports> li = jdbcTemplate.query(query,parameters, new RowMapper<Reports>() {
@@ -806,6 +805,180 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 	
 	}
 
+	/**
+	 * Generate play commands from unacknowledged reports (Open, Closed, Boom Lock)
+	 * Returns list of play command strings for reports that haven't been acknowledged yet
+	 * 
+	 * @param username The username (SM or GM)
+	 * @param role The role (sm or gm)
+	 * @return List of play command strings (e.g., "750 Opened", "750 Closed", "750 boom lock is healthy.")
+	 */
+	public List<String> getPlayCommandsFromReports(String username, String role) {
+		List<String> playCommands = new ArrayList<>();
+		try {
+			if (username == null || username.isEmpty()) {
+				return playCommands;
+			}
+			
+			// Determine which field to query based on role
+			String roleField = "";
+			if (role != null && role.indexOf('s') != -1) {
+				roleField = "sm";
+			} else if (role != null && role.indexOf('g') != -1) {
+				roleField = "gm";
+			} else {
+				return playCommands; // Invalid role
+			}
+			
+			// Get LATEST unacknowledged report per gate (regardless of command type)
+			// Then determine play command based on that latest report's command field
+			String latestReportQuery = "SELECT lc_name, command, Boom_Lock FROM reports " +
+				"WHERE " + roleField + " = ? " +
+				"AND (ackn IS NULL OR ackn = '') " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+				"AND id IN (" +
+				"  SELECT MAX(id) FROM reports " +
+				"  WHERE " + roleField + " = ? " +
+				"  AND (ackn IS NULL OR ackn = '') " +
+				"  AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+				"  GROUP BY lc_name" +
+				") " +
+				"ORDER BY added_on DESC, id DESC";
+			
+			List<Map<String, Object>> latestRows = jdbcTemplate1.queryForList(latestReportQuery, username, username);
+			for (Map<String, Object> row : latestRows) {
+				Object lcNameObj = row.get("lc_name");
+				Object commandObj = row.get("command");
+				Object boomLockObj = row.get("Boom_Lock");
+				
+				if (lcNameObj == null) {
+					continue;
+				}
+				
+				String lcName = lcNameObj.toString().trim();
+				if (lcName.isEmpty()) {
+					continue;
+				}
+				
+				// Check command field case-insensitively (handle Open, Closed, Close)
+				String command = commandObj != null ? commandObj.toString().trim() : "";
+				String commandUpper = command.toUpperCase();
+				
+				if ("OPEN".equals(commandUpper)) {
+					// Latest report is Open → add "Opened"
+					playCommands.add(lcName + " Opened");
+				} else if ("CLOSED".equals(commandUpper) || "CLOSE".equals(commandUpper)) {
+					// Latest report is Closed or Close → add "Closed"
+					playCommands.add(lcName + " Closed");
+					
+					// If Closed report has Boom_Lock, also add boom lock status
+					if (boomLockObj != null) {
+						String boomLockValue = boomLockObj.toString().trim();
+						if (!boomLockValue.isEmpty()) {
+							// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
+							String status = boomLockValue.toLowerCase();
+							if (status.startsWith("healthy")) {
+								playCommands.add(lcName + " boom lock is healthy.");
+							} else if (status.startsWith("unhealthy")) {
+								playCommands.add(lcName + " boom lock is unhealthy.");
+							}
+						}
+					}
+				}
+				// Ignore other command types (NO-NETWORK, etc.)
+			}
+			
+		} catch (Exception e) {
+			logger.error("Error generating play commands from reports for username: {}, role: {}", username, role, e);
+		}
+		
+		return playCommands;
+	}
 
+	/**
+	 * Get play command for a single gate based on latest unacknowledged report
+	 * Returns play command string (e.g., "750 Opened", "750 Closed", "750 boom lock is healthy.")
+	 * 
+	 * @param username The username (SM or GM)
+	 * @param role The role (sm or gm)
+	 * @param gateNum The gate number (lc_name)
+	 * @param boom1Id The BOOM1_ID
+	 * @return Play command string or null if no unacknowledged report found
+	 */
+	public String getPlayCommandForGate(String username, String role, String gateNum, String boom1Id) {
+		try {
+			if (username == null || username.isEmpty() || gateNum == null || gateNum.trim().isEmpty()) {
+				return null;
+			}
+			
+			// Determine which field to query based on role
+			String roleField = "";
+			if (role != null && role.indexOf('s') != -1) {
+				roleField = "sm";
+			} else if (role != null && role.indexOf('g') != -1) {
+				roleField = "gm";
+			} else {
+				return null; // Invalid role
+			}
+			
+			// Get LATEST unacknowledged report for this specific gate
+			String latestReportQuery = "SELECT command, Boom_Lock FROM reports " +
+				"WHERE " + roleField + " = ? " +
+				"AND (ackn IS NULL OR ackn = '') " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+				"AND (lc = ? OR lc_name = ? OR lc = ? OR lc_name = ?) " +
+				"ORDER BY added_on DESC, id DESC " +
+				"LIMIT 1";
+			
+			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
+			String gn = (gateNum != null) ? gateNum.trim() : "";
+			
+			List<Map<String, Object>> latestRows = jdbcTemplate1.queryForList(latestReportQuery, username, b1, gn, b1, gn);
+			
+			if (latestRows == null || latestRows.isEmpty()) {
+				return null; // No unacknowledged report found
+			}
+			
+			Map<String, Object> row = latestRows.get(0);
+			Object commandObj = row.get("command");
+			Object boomLockObj = row.get("Boom_Lock");
+			
+			// Check command field case-insensitively (handle Open, Closed, Close)
+			String command = commandObj != null ? commandObj.toString().trim() : "";
+			String commandUpper = command.toUpperCase();
+			
+			if ("OPEN".equals(commandUpper)) {
+				// Latest report is Open → return "Opened"
+				return gn + " Opened";
+			} else if ("CLOSED".equals(commandUpper) || "CLOSE".equals(commandUpper)) {
+				// Latest report is Closed or Close → return "Closed"
+				String playCmd = gn + " Closed";
+				
+				// If Closed report has Boom_Lock, also add boom lock status
+				if (boomLockObj != null) {
+					String boomLockValue = boomLockObj.toString().trim();
+					if (!boomLockValue.isEmpty()) {
+						// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
+						String status = boomLockValue.toLowerCase();
+						if (status.startsWith("healthy")) {
+							return gn + " boom lock is healthy.";
+						} else if (status.startsWith("unhealthy")) {
+							return gn + " boom lock is unhealthy.";
+						}
+					}
+				}
+				
+				return playCmd;
+			}
+			
+			// Ignore other command types (NO-NETWORK, etc.)
+			return null;
+			
+		} catch (Exception e) {
+			logger.error("Error getting play command for gate: {} (BOOM1_ID: {}), username: {}, role: {}", 
+				gateNum, boom1Id, username, role, e);
+			return null;
+		}
+	}
 
 }
