@@ -286,10 +286,21 @@ public class ManageGatesService {
 						 continue;
 					 }
 					 
+					 // If report is not acknowledged yet (ackn is empty), do not show gm_pn.
+					 // gm_pn should only be shown after user acknowledges the report via ACK/sendpn.
+					 boolean hasAckn = reportHasNonEmptyAckn(id);
+					 if (!hasAckn) {
+						 m.setPn(null);
+						 m.setBs1Gc(null);
+						 continue;
+					 }
+					 
 					 // GM expected PN (for lc_pin). This must be different from SM PN stored in reports.pn.
+					 // After ACK, we need to show gm_pn so user can send it via ACK/sendpn.
 					 String st = userRepository.findReportIdGmPN(id);
 					 
-					 // If not found in Redis, generate on-demand (fallback) and store
+					 // If not found in Redis, generate on-demand (fallback) and store as GM PN.
+					 // This ensures gm_pn is always available after ACK, even if updateQ() didn't generate it.
 					 if (st == null || st.trim().isEmpty()) {
 						 try {
 							 // Read SM PN from DB so we can ensure GM PN differs
@@ -303,8 +314,34 @@ public class ManageGatesService {
 								 }
 							 }
 							 if (gmPn == null) {
+								 // Extremely unlikely fallback
 								 gmPn = pnGenerationService.generateUniquePNForGate(m.getBoom1Id());
 							 }
+							 st = gmPn;
+							 // Store as GM PN (not SM PN) so it can be validated in sendpn()
+							 userRepository.saveReportIdGmPN(id, st);
+							 try {
+								 // Reserve in Redis uniqueness (per gate) so it won't be reused within 24h
+								 userRepository.markPNAsUsed(m.getBoom1Id(), st);
+								 if (m.getGateNum() != null && !m.getGateNum().trim().isEmpty()) {
+									 userRepository.markPNAsUsed(m.getGateNum(), st);
+								 }
+							 } catch (Exception e) {
+								 // Not fatal; uniqueness also enforced by DB scan, but Redis helps.
+								 logger.debug("Failed to mark GM PN as used in Redis for gate keys, reportId: {}, PN: {}", id, st, e);
+							 }
+						 } catch (Exception e) {
+							 // If generation fails, log warning but continue - we'll try one more time below
+							 logger.warn("Failed to generate GM PN on-demand for reportId: {}, gate: {} (BOOM1_ID: {})",
+								 id, m.getGateNum(), m.getBoom1Id(), e);
+						 }
+					 }
+					 
+					 // Final fallback: if GM PN generation above failed, try one more time
+					 // This ensures gm_pn is always available after ACK.
+					 if (st == null || st.trim().isEmpty()) {
+						 try {
+							 String gmPn = pnGenerationService.generateUniquePNForGate(m.getBoom1Id());
 							 st = gmPn;
 							 userRepository.saveReportIdGmPN(id, st);
 							 try {
@@ -313,54 +350,13 @@ public class ManageGatesService {
 									 userRepository.markPNAsUsed(m.getGateNum(), st);
 								 }
 							 } catch (Exception e) {
-								 // ignore
+								 logger.debug("Failed to mark final fallback GM PN as used in Redis, reportId: {}, PN: {}", id, st, e);
 							 }
 						 } catch (Exception e) {
-							 // ignore - st will remain null
+							 logger.warn("Final fallback GM PN generation failed for reportId: {}, gate: {} (BOOM1_ID: {})",
+								 id, m.getGateNum(), m.getBoom1Id(), e);
+							 // If all attempts fail, st will remain null and gm_pn will be null
 						 }
-					 }
-	//				 if(st==null) {
-	//					 Random random = new Random();
-	//					 int a = 10+random.nextInt(90);
-	//					 st = String.valueOf(a); 
-	//					 reportid.put(id, st);
-	//					 ackService.updateQueue(m.getSM(), "closed",m.getGateNum());
-	//
-	//				 }
-					 
-					 if(st==null || st.trim().isEmpty()) {
-						 try {
-							 // Prefer central PN generation (3-digit, no zeros, 24h unique per gate) which also updates DB.
-							 pnGenerationService.generatePNIfNeeded(m.getBoom1Id(), username, m.getSM());
-							 st = userRepository.findReportIdPN(id);
-							 if (st == null || st.trim().isEmpty()) {
-								 st = getPnFromDatabase(id);
-							 }
-						 } catch (Exception e) {
-							 logger.warn("Failed to auto-generate PN via PNGenerationService for gate: {} (BOOM1_ID: {}), reportId: {}",
-								 m.getGateNum(), m.getBoom1Id(), id, e);
-						 }
-					 }
-
-					 // Final fallback: generate unique PN and persist to DB + Redis mapping for the reportId
-					 if(st==null || st.trim().isEmpty()) {
-						 String pnStr = pnGenerationService.generateUniquePNForGate(m.getBoom1Id());
-						 st = pnStr;
-						 userRepository.saveReportIdPN(id, st);
-						 try {
-							 jdbcTemplate1.update("UPDATE reports SET pn = ? WHERE id = ?", st, id);
-						 } catch (Exception dbEx) {
-							 logger.warn("Failed to persist fallback PN to DB for reportId: {}, PN: {}", id, st, dbEx);
-						 }
-						 try {
-							 userRepository.markPNAsUsed(m.getBoom1Id(), st);
-							 if (m.getGateNum() != null && !m.getGateNum().trim().isEmpty()) {
-								 userRepository.markPNAsUsed(m.getGateNum(), st);
-							 }
-						 } catch (Exception redisEx) {
-							 logger.debug("Failed to mark fallback PN as used in Redis for gate keys, reportId: {}, PN: {}", id, st, redisEx);
-						 }
-
 					 }
 					 // Set pn field as GM PN (exposed as gm_pn via @JsonProperty)
 					 m.setPn(st);
@@ -458,6 +454,28 @@ public class ManageGatesService {
 			return lcPin != null && !lcPin.trim().isEmpty();
 		} catch (Exception e) {
 			logger.warn("Error checking lc_pin for reportId: {}", reportId, e);
+			return false;
+		}
+	}
+	
+	/**
+	 * True if reports.ackn is non-null and non-empty for the given reportId.
+	 * If ackn is empty, the report has not been acknowledged yet, so gm_pn should NOT be shown.
+	 */
+	private boolean reportHasNonEmptyAckn(String reportId) {
+		try {
+			if (reportId == null || reportId.trim().isEmpty()) {
+				return false;
+			}
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList("SELECT ackn FROM reports WHERE id=? LIMIT 1", reportId.trim());
+			if (rows == null || rows.isEmpty()) {
+				return false;
+			}
+			Object acknObj = rows.get(0).get("ackn");
+			String ackn = acknObj != null ? acknObj.toString() : null;
+			return ackn != null && !ackn.trim().isEmpty();
+		} catch (Exception e) {
+			logger.warn("Error checking ackn for reportId: {}", reportId, e);
 			return false;
 		}
 	}

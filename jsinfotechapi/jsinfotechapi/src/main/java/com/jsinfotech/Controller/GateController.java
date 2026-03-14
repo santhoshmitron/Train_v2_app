@@ -280,7 +280,8 @@ public class GateController {
 			com.jsinfotech.Domain.FailsafeResponse failsafeResponse = reportsService.getFailsafeResponseData(userid);
 			if (failsafeResponse != null) {
 				response.setReportid(failsafeResponse.getReportid());
-				response.setPlay_command(failsafeResponse.getPlay_command());
+				// Always set play_command to empty list (not populated from failsafeResponse)
+				response.setPlay_command(new java.util.ArrayList<>());
 			} else {
 				response.setReportid(new java.util.ArrayList<>());
 				response.setPlay_command(new java.util.ArrayList<>());
