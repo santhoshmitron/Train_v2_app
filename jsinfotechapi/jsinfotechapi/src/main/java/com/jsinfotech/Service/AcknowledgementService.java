@@ -71,7 +71,8 @@ public class AcknowledgementService {
 		String date1 = simpleDateFormat.format(current.getTime());
 		parameters.addValue("today", date1);
 		System.out.println("parameters" + parameters.getValue("userId") + parameters.getValue("today"));
-		String SQL = "select * from reports where (command='Close' or command='Cancel') and ackn='' and redy='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
+		// Include 'Closed' so that when gate is already closed and close command is sent, mobile gets a report to ack and plays "acknowledged" sound
+		String SQL = "select * from reports where (command='Close' or command='Cancel' or command='Closed') and ackn='' and redy='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
 
 		List<Reports> reports = jdbcTemplate.query(SQL, parameters, new RowMapper<Reports>() {
 			@Override
@@ -115,7 +116,8 @@ public class AcknowledgementService {
 		String date1 = simpleDateFormat.format(current.getTime());
 		parameters.addValue("today", date1);
 		System.out.println("parameters" + parameters.getValue("userId") + parameters.getValue("today"));
-		String SQL = "select * from reports where command in ('Close','Cancel') and ackn='' and gm=(:userId) and added_on >(:today) order by id asc limit 1";
+		// Include 'Closed' so that when gate is already closed, mobile gets report to ack and gets "acknowledged" sound
+		String SQL = "select * from reports where command in ('Close','Cancel','Closed') and ackn='' and gm=(:userId) and added_on >(:today) order by id asc limit 1";
 		
 		//String SQL1 = "select * from reports where command='Cancel' and ackn='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
 

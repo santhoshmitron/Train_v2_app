@@ -896,16 +896,17 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 	}
 
 	/**
-	 * Get play command for a single gate based on latest unacknowledged report
+	 * Get play command for a single gate based on main status and latest unacknowledged report
 	 * Returns play command string (e.g., "750 Opened", "750 Closed", "750 boom lock is healthy.")
 	 * 
 	 * @param username The username (SM or GM)
 	 * @param role The role (sm or gm)
 	 * @param gateNum The gate number (lc_name)
 	 * @param boom1Id The BOOM1_ID
+	 * @param mainStatus The main status from managegates table ("open" or "closed")
 	 * @return Play command string or null if no unacknowledged report found
 	 */
-	public String getPlayCommandForGate(String username, String role, String gateNum, String boom1Id) {
+	public String getPlayCommandForGate(String username, String role, String gateNum, String boom1Id, String mainStatus, String reportId) {
 		try {
 			if (username == null || username.isEmpty() || gateNum == null || gateNum.trim().isEmpty()) {
 				return null;
@@ -921,43 +922,154 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 				return null; // Invalid role
 			}
 			
-			// Get LATEST unacknowledged report for this specific gate
-			String latestReportQuery = "SELECT command, Boom_Lock FROM reports " +
-				"WHERE " + roleField + " = ? " +
-				"AND (ackn IS NULL OR ackn = '') " +
-				"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
-				"AND (lc = ? OR lc_name = ? OR lc = ? OR lc_name = ?) " +
-				"ORDER BY added_on DESC, id DESC " +
-				"LIMIT 1";
-			
 			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
 			String gn = (gateNum != null) ? gateNum.trim() : "";
 			
-			List<Map<String, Object>> latestRows = jdbcTemplate1.queryForList(latestReportQuery, username, b1, gn, b1, gn);
-			
-			if (latestRows == null || latestRows.isEmpty()) {
-				return null; // No unacknowledged report found
+			// Priority 1: Check Boom_Lock first (takes precedence over main status)
+			// If reportId is provided, first check if there's a NEWER report with Boom_Lock updated
+			// If newer report has Boom_Lock, use that status; otherwise use reportId's Boom_Lock
+			if (reportId != null && !reportId.trim().isEmpty()) {
+				try {
+					int reportIdInt = Integer.parseInt(reportId.trim());
+					
+					// First, check if there's a NEWER report (id > reportId) with Boom_Lock for this gate
+					// This handles cases where Boom_Lock status updates in a newer row
+					String newerBoomLockQuery = "SELECT id, Boom_Lock FROM reports " +
+						"WHERE " + roleField + " = ? " +
+						"AND id > ? " +
+						"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+						"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+						"AND (Boom_Lock IS NOT NULL AND Boom_Lock != '') " +
+						"ORDER BY id DESC " +
+						"LIMIT 1";
+					
+					List<Map<String, Object>> newerRows = jdbcTemplate1.queryForList(newerBoomLockQuery, username, reportIdInt, b1, gn, b1, gn);
+					
+					// If newer report with Boom_Lock found, use that status
+					if (newerRows != null && !newerRows.isEmpty()) {
+						Map<String, Object> row = newerRows.get(0);
+						
+						// Try to find Boom_Lock column - check all possible case variations
+						Object boomLockObj = null;
+						for (String key : row.keySet()) {
+							if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
+								boomLockObj = row.get(key);
+								break;
+							}
+						}
+						
+						// If still not found, try common variations
+						if (boomLockObj == null) {
+							boomLockObj = row.get("Boom_Lock");
+						}
+						if (boomLockObj == null) {
+							boomLockObj = row.get("BOOM_LOCK");
+						}
+						if (boomLockObj == null) {
+							boomLockObj = row.get("boom_lock");
+						}
+						
+						if (boomLockObj != null) {
+							String boomLockValue = boomLockObj.toString().trim();
+							if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
+								String status = boomLockValue.toLowerCase();
+								if (status.startsWith("healthy")) {
+									return gn + " boom lock is healthy.";
+								} else if (status.startsWith("unhealthy")) {
+									return gn + " boom lock is unhealthy.";
+								}
+							}
+						}
+					}
+					
+					// If no newer report with Boom_Lock, check the specific reportId's Boom_Lock
+					String reportBoomLockQuery = "SELECT Boom_Lock FROM reports WHERE id = ?";
+					List<Map<String, Object>> reportRows = jdbcTemplate1.queryForList(reportBoomLockQuery, reportIdInt);
+					
+					if (reportRows != null && !reportRows.isEmpty()) {
+						Map<String, Object> row = reportRows.get(0);
+						
+						// Try to find Boom_Lock column - check all possible case variations
+						Object boomLockObj = null;
+						for (String key : row.keySet()) {
+							if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
+								boomLockObj = row.get(key);
+								break;
+							}
+						}
+						
+						// If still not found, try common variations
+						if (boomLockObj == null) {
+							boomLockObj = row.get("Boom_Lock");
+						}
+						if (boomLockObj == null) {
+							boomLockObj = row.get("BOOM_LOCK");
+						}
+						if (boomLockObj == null) {
+							boomLockObj = row.get("boom_lock");
+						}
+						
+						// If this specific reportId has Boom_Lock, return boom lock status message
+						if (boomLockObj != null) {
+							String boomLockValue = boomLockObj.toString().trim();
+							if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
+								String status = boomLockValue.toLowerCase();
+								if (status.startsWith("healthy")) {
+									return gn + " boom lock is healthy.";
+								} else if (status.startsWith("unhealthy")) {
+									return gn + " boom lock is unhealthy.";
+								}
+							}
+						}
+					}
+				} catch (NumberFormatException e) {
+					logger.warn("Invalid reportId format: {}", reportId);
+				} catch (Exception e) {
+					logger.warn("Error checking Boom_Lock for reportId {}: {}", reportId, e.getMessage());
+				}
 			}
 			
-			Map<String, Object> row = latestRows.get(0);
-			Object commandObj = row.get("command");
-			Object boomLockObj = row.get("Boom_Lock");
+			// If reportId not provided or doesn't have Boom_Lock, check latest report for this gate
+			// Use same query structure as findLatestClosedReportIdForGate for consistency
+			String latestReportQuery = "SELECT id, Boom_Lock FROM reports " +
+				"WHERE " + roleField + " = ? " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+				"ORDER BY id DESC " +
+				"LIMIT 1";
 			
-			// Check command field case-insensitively (handle Open, Closed, Close)
-			String command = commandObj != null ? commandObj.toString().trim() : "";
-			String commandUpper = command.toUpperCase();
+			List<Map<String, Object>> latestRows = jdbcTemplate1.queryForList(latestReportQuery, username, b1, gn, b1, gn);
 			
-			if ("OPEN".equals(commandUpper)) {
-				// Latest report is Open → return "Opened"
-				return gn + " Opened";
-			} else if ("CLOSED".equals(commandUpper) || "CLOSE".equals(commandUpper)) {
-				// Latest report is Closed or Close → return "Closed"
-				String playCmd = gn + " Closed";
+			// Check Boom_Lock in the latest report
+			if (latestRows != null && !latestRows.isEmpty()) {
+				Map<String, Object> row = latestRows.get(0);
 				
-				// If Closed report has Boom_Lock, also add boom lock status
+				// Try to find Boom_Lock column - check all possible case variations
+				Object boomLockObj = null;
+				for (String key : row.keySet()) {
+					if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
+						boomLockObj = row.get(key);
+						break;
+					}
+				}
+				
+				// If still not found, try common variations
+				if (boomLockObj == null) {
+					boomLockObj = row.get("Boom_Lock");
+				}
+				if (boomLockObj == null) {
+					boomLockObj = row.get("BOOM_LOCK");
+				}
+				if (boomLockObj == null) {
+					boomLockObj = row.get("boom_lock");
+				}
+				
+				// If latest report has Boom_Lock, return boom lock status message (priority)
+				// This takes precedence over main status - once Boom_Lock is updated, show that status
 				if (boomLockObj != null) {
 					String boomLockValue = boomLockObj.toString().trim();
-					if (!boomLockValue.isEmpty()) {
+					// Check if Boom_Lock has a valid value (not empty, not "null" string)
+					if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
 						// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
 						String status = boomLockValue.toLowerCase();
 						if (status.startsWith("healthy")) {
@@ -965,13 +1077,25 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 						} else if (status.startsWith("unhealthy")) {
 							return gn + " boom lock is unhealthy.";
 						}
+						// If Boom_Lock has a value but doesn't match healthy/unhealthy, still return it
+						// This handles any edge cases where format might be slightly different
+						return gn + " boom lock is " + status.split("\\[")[0] + ".";
 					}
 				}
-				
-				return playCmd;
 			}
 			
-			// Ignore other command types (NO-NETWORK, etc.)
+			// Priority 2: Check main status from managegates table (not command field from reports)
+			// Use main status to determine Open/Closed play commands
+			if (mainStatus != null && !mainStatus.trim().isEmpty()) {
+				String mainStatusLower = mainStatus.toLowerCase().trim();
+				if ("open".equals(mainStatusLower)) {
+					return gn + " Opened";
+				} else if ("closed".equals(mainStatusLower)) {
+					return gn + " Closed";
+				}
+			}
+			
+			// No valid play command found
 			return null;
 			
 		} catch (Exception e) {

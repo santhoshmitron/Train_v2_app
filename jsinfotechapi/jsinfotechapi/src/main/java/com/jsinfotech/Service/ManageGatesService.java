@@ -151,18 +151,20 @@ public class ManageGatesService {
 			m.setId(k);
 			k++;
 			
-			// Populate boom_lock_play_commad field based on latest unacknowledged report
-			// Shows: "750 Opened", "750 Closed", or "750 boom lock is healthy/unhealthy"
-			try {
-				String boom1Id = m.getBoom1Id();
-				String gateNum = m.getGateNum();
-				
-				// Get play command based on latest unacknowledged report for this gate
-				String playCommand = reportsService.getPlayCommandForGate(username, rolename, gateNum, boom1Id);
-				m.setBoom_lock_play_commad(playCommand);
-			} catch (Exception e) {
-				logger.warn("Error getting play command for gate: {} (BOOM1_ID: {}): {}", m.getGateNum(), m.getBoom1Id(), e.getMessage());
-				m.setBoom_lock_play_commad(null); // Set null on error
+			// For SM role, set boom_lock_play_commad here (no specific reportId needed)
+			// For GM role with closed gates, it will be set later after reportId is determined
+			if(rolename.indexOf('s')!=-1) {
+				try {
+					String boom1Id = m.getBoom1Id();
+					String gateNum = m.getGateNum();
+					String mainStatus = m.getStatus();
+					String playCommand = reportsService.getPlayCommandForGate(username, rolename, gateNum, boom1Id, mainStatus, null);
+					m.setBoom_lock_play_commad(playCommand);
+				} catch (Exception e) {
+					logger.warn("Error getting play command for gate: {} (BOOM1_ID: {}): {}", 
+						m.getGateNum(), m.getBoom1Id(), e.getMessage());
+					m.setBoom_lock_play_commad(null);
+				}
 			}
 			
 			// Populate failsafe status (play_command field removed)
@@ -214,6 +216,20 @@ public class ManageGatesService {
 					 m.setReportId(id);
 					 // Keep bs1Go for backward compatibility (internal use only)
 					 m.setBs1Go(id);
+					 
+					 // Get play command based on the exact reportId that's being displayed
+					 // This ensures boom_lock_play_commad matches the reportId shown in response
+					 try {
+						 String boom1Id = m.getBoom1Id();
+						 String gateNum = m.getGateNum();
+						 String mainStatus = m.getStatus();
+						 String playCommand = reportsService.getPlayCommandForGate(username, rolename, gateNum, boom1Id, mainStatus, id);
+						 m.setBoom_lock_play_commad(playCommand);
+					 } catch (Exception e) {
+						 logger.warn("Error getting play command for gate: {} (BOOM1_ID: {}), reportId: {}: {}", 
+							 m.getGateNum(), m.getBoom1Id(), id, e.getMessage());
+						 m.setBoom_lock_play_commad(null);
+					 }
 					 
 					 // Only expose gm_pn when the selected reportId has a train number (tn).
 					 // If tn is empty, return gm_pn as null and do not generate/store expected GM PN.
@@ -319,6 +335,19 @@ public class ManageGatesService {
 				  // Status is "open" or not "closed", set reportId and pn to null
 				  m.setReportId(null);
 				  m.setPn(null);
+				  
+				  // For open gates, get play command based on main status (no specific reportId)
+				  try {
+					  String boom1Id = m.getBoom1Id();
+					  String gateNum = m.getGateNum();
+					  String mainStatus = m.getStatus();
+					  String playCommand = reportsService.getPlayCommandForGate(username, rolename, gateNum, boom1Id, mainStatus, null);
+					  m.setBoom_lock_play_commad(playCommand);
+				  } catch (Exception e) {
+					  logger.warn("Error getting play command for gate: {} (BOOM1_ID: {}): {}", 
+						  m.getGateNum(), m.getBoom1Id(), e.getMessage());
+					  m.setBoom_lock_play_commad(null);
+				  }
 			  }
 		  }
 		}

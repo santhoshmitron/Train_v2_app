@@ -54,7 +54,7 @@ public class ReportsController {
 					// Get Redis audio only (play commands moved to getstatus API)
 					String com = userRepository.poppAudio(username);
 					if (com != null && !com.trim().isEmpty()) {
-						commands.add(com);
+				    commands.add(com);
 					}
 					
 					// Remove empty strings
@@ -72,19 +72,19 @@ public class ReportsController {
 					  
 					  // Add Redis audio (only non-empty)
 					  if (com != null && !com.trim().isEmpty()) {
-						  commands.add(com);
-					  }
+				    	commands.add(com);
+				    }
 					  if (com1 != null && !com1.trim().isEmpty()) {
-						  commands.add(com1);
-					  }
+				    	commands.add(com1);
+				    }
 					  
 					  // Remove empty strings
 					  commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
 					  
-					  report.setPlay_command(commands);
-					  logger.info("GetReportsm"+username+role);
-					  report.setReport(Service.findByUsername(username,role));
-					  return report;
+					report.setPlay_command(commands);
+					logger.info("GetReportsm"+username+role);
+					report.setReport(Service.findByUsername(username,role));
+					return report;
 				}
 
 				

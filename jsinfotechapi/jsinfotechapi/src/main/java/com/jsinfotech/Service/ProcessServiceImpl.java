@@ -910,7 +910,7 @@ public class ProcessServiceImpl{
 								} else {
 									logger.info("Status already 'Closed' but no recent Closed report exists. Creating Closed report for gate: {} (BOOM1_ID: {}, lc_name: {})",
 										gate, boom1IdForUpdate, obj3.getLc_name());
-									// Create a Closed report row (no train)
+									// Create a Closed report row (no train). Use redy='' so getReports returns it and mobile can ack → "acknowledged" sound plays
 									String patternNow = "yyyy-MM-dd HH:mm:ss";
 									SimpleDateFormat sdfNow = new SimpleDateFormat(patternNow);
 									sdfNow.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
@@ -918,7 +918,7 @@ public class ProcessServiceImpl{
 									insertResult = jdbcTemplate1.update(
 										"insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 										"","",time,"Closed","",obj3.getSm(),obj3.getGm(),boom1IdForUpdate,obj3.getLc_name(),
-										currentDateTime,"Closed",time,"","","","","s"
+										currentDateTime,"Closed",time,"","","","",""
 									);
 									if (insertResult > 0) {
 										reportExists = true;
