@@ -41,6 +41,67 @@ public class ProcessServiceImpl{
 	@Autowired
 	BoomLockHealthService boomLockHealthService;
 
+	private static final class CanonicalGate {
+		private final String boom1Id;
+		private final String gateNum;
+		private final String sm;
+		private final String gm;
+		private final String bs1Status;
+		private final String bs2Status;
+		private final String leverStatus;
+		private final String mainStatus;
+
+		private CanonicalGate(String boom1Id, String gateNum, String sm, String gm,
+				String bs1Status, String bs2Status, String leverStatus, String mainStatus) {
+			this.boom1Id = boom1Id;
+			this.gateNum = gateNum;
+			this.sm = sm;
+			this.gm = gm;
+			this.bs1Status = bs1Status;
+			this.bs2Status = bs2Status;
+			this.leverStatus = leverStatus;
+			this.mainStatus = mainStatus;
+		}
+	}
+
+	private CanonicalGate resolveCanonicalGate(String gateId) {
+		if (gateId == null || gateId.trim().isEmpty()) {
+			return null;
+		}
+		String gid = gateId.trim();
+
+		// Try exact ID lookups first (covers BOOM1_ID, BOOM2_ID, handle, LTSW_ID).
+		String sql =
+			"SELECT BOOM1_ID, Gate_Num, SM, GM, BS1_STATUS, BS2_STATUS, LEVER_STATUS, status " +
+			"FROM managegates " +
+			"WHERE BOOM1_ID=? OR BOOM2_ID=? OR handle=? OR LTSW_ID=? " +
+			"LIMIT 1";
+		List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gid, gid, gid, gid);
+
+		// BS1 devices sometimes send BOOM1_ID with a trailing '1' (e.g., E20-750BS1 vs E20-750BS)
+		// If not found, retry without the trailing '1' to normalize to BOOM1_ID.
+		if ((rows == null || rows.isEmpty()) && gid.endsWith("1")) {
+			String gidNoOne = gid.substring(0, gid.length() - 1);
+			rows = jdbcTemplate1.queryForList(sql, gidNoOne, gidNoOne, gidNoOne, gidNoOne);
+		}
+
+		if (rows == null || rows.isEmpty()) {
+			return null;
+		}
+
+		Map<String, Object> row = rows.get(0);
+		String boom1Id = row.get("BOOM1_ID") != null ? row.get("BOOM1_ID").toString() : null;
+		String gateNum = row.get("Gate_Num") != null ? row.get("Gate_Num").toString() : null;
+		String sm = row.get("SM") != null ? row.get("SM").toString() : null;
+		String gm = row.get("GM") != null ? row.get("GM").toString() : null;
+		String bs1Status = row.get("BS1_STATUS") != null ? row.get("BS1_STATUS").toString() : "open";
+		String bs2Status = row.get("BS2_STATUS") != null ? row.get("BS2_STATUS").toString() : "open";
+		String leverStatus = row.get("LEVER_STATUS") != null ? row.get("LEVER_STATUS").toString() : "open";
+		String mainStatus = row.get("status") != null ? row.get("status").toString() : "Open";
+
+		return new CanonicalGate(boom1Id, gateNum, sm, gm, bs1Status, bs2Status, leverStatus, mainStatus);
+	}
+
     @Async("processExecutor")
     public void updateRecord(String gate, int status, int statuss) {
 		// Legacy method - call new method with -1 for BS2 and LT (will use last known values)
@@ -649,8 +710,13 @@ public class ProcessServiceImpl{
 						if (boom1IdForLS != null && !boom1IdForLS.isEmpty()) {
 							updateMainStatusToOpenAndCreateReportIfNeeded(gate, boom1IdForLS);
 						} else {
-							// Fallback: try updating by handle
-							updateMainStatusToOpenAndCreateReportIfNeeded(gate, gate);
+							// Fallback: resolve canonical BOOM1_ID from managegates and update by BOOM1_ID
+							CanonicalGate cg = resolveCanonicalGate(gate);
+							if (cg != null && cg.boom1Id != null && !cg.boom1Id.trim().isEmpty()) {
+								updateMainStatusToOpenAndCreateReportIfNeeded(gate, cg.boom1Id.trim());
+							} else {
+								logger.warn("Could not resolve BOOM1_ID for LS handle: {}. Skipping main status Open update.", gate);
+							}
 						}
 					} else {	
 						logger.warn("[LS] [{}] FAILED to update status to open - no rows affected. Check if handle exists: {}", gate, gate);
@@ -703,24 +769,16 @@ public class ProcessServiceImpl{
 			
 			// Explicitly query latest sensor statuses from database to avoid stale cache data
 			logger.debug("Querying latest sensor statuses from database for gate: {}", gate);
-			String statusCheckSql = "SELECT BS1_STATUS, BS2_STATUS, LEVER_STATUS, BOOM1_ID, Gate_Num, SM, GM, status FROM managegates WHERE BOOM1_ID=? OR BOOM2_ID=? OR handle=? LIMIT 1";
-			List<Map<String, Object>> statusRows = jdbcTemplate1.queryForList(statusCheckSql, gate, gate, gate);
-			
-			if (statusRows == null || statusRows.isEmpty()) {
-				logger.error("Cannot proceed with gate status update - gate {} not found in managegates table", gate);
+			CanonicalGate canonical = resolveCanonicalGate(gate);
+			if (canonical == null || canonical.boom1Id == null || canonical.boom1Id.trim().isEmpty()) {
+				logger.error("Cannot proceed with gate status update - gate {} not found/cannot resolve canonical BOOM1_ID in managegates table", gate);
 				return;
 			}
-			
-			Map<String, Object> statusRow = statusRows.get(0);
-			String dbBs1Status = (String) statusRow.get("BS1_STATUS");
-			String dbBs2Status = (String) statusRow.get("BS2_STATUS");
-			String dbLeverStatus = (String) statusRow.get("LEVER_STATUS");
-			String dbStatus = (String) statusRow.get("status");
-			
-			// Default to "open" if null
-			if (dbBs1Status == null) dbBs1Status = "open";
-			if (dbBs2Status == null) dbBs2Status = "open";
-			if (dbLeverStatus == null) dbLeverStatus = "open";
+
+			String dbBs1Status = canonical.bs1Status != null ? canonical.bs1Status : "open";
+			String dbBs2Status = canonical.bs2Status != null ? canonical.bs2Status : "open";
+			String dbLeverStatus = canonical.leverStatus != null ? canonical.leverStatus : "open";
+			String dbStatus = canonical.mainStatus;
 			
 			logger.info("Latest sensor statuses from database for gate {}: BS1_STATUS={}, BS2_STATUS={}, LEVER_STATUS={}, managegates.status={}", 
 				gate, dbBs1Status, dbBs2Status, dbLeverStatus, dbStatus);
@@ -751,17 +809,17 @@ public class ProcessServiceImpl{
 			if (isGateClosed) {
 				logger.info("in if condition - gate is closed (BS1, BS2, and LS are all closed - LT statuses are NOT considered)");
 				// Get BOOM1_ID from the found row to use in UPDATE (since BOOM1_ID is the unique key)
-				String boom1IdForUpdate = obj3.getGate();
-				if (boom1IdForUpdate == null || boom1IdForUpdate.isEmpty()) {
-					// Fallback: try to get BOOM1_ID from database
-					try {
-						String getBoom1IdSql = "SELECT BOOM1_ID FROM managegates WHERE BOOM1_ID=? OR BOOM2_ID=? OR handle=? LIMIT 1";
-						boom1IdForUpdate = (String) jdbcTemplate1.queryForObject(getBoom1IdSql, new Object[] {gate, gate, gate}, String.class);
-					} catch (Exception e) {
-						logger.warn("Could not get BOOM1_ID for gate: {}", gate);
-						boom1IdForUpdate = gate; // Fallback to original gate value
-					}
-				}
+				String boom1IdForUpdate = canonical.boom1Id != null ? canonical.boom1Id.trim() : null;
+				String gateNumForUpdate = canonical.gateNum != null ? canonical.gateNum.trim() : obj3.getLc_name();
+				String gmForUpdate = canonical.gm != null ? canonical.gm.trim() : obj3.getGm();
+				String smForUpdate = canonical.sm != null ? canonical.sm.trim() : obj3.getSm();
+
+				// Keep API object consistent with canonical row (report printing depends on gm + gate number)
+				if (gateNumForUpdate != null && !gateNumForUpdate.isEmpty()) obj3.setLc_name(gateNumForUpdate);
+				if (gmForUpdate != null && !gmForUpdate.isEmpty()) obj3.setGm(gmForUpdate);
+				if (smForUpdate != null && !smForUpdate.isEmpty()) obj3.setSm(smForUpdate);
+				if (boom1IdForUpdate != null && !boom1IdForUpdate.isEmpty()) obj3.setGate(boom1IdForUpdate);
+
 				int i = jdbcTemplate1.update("update managegates set status=? where BOOM1_ID=?",new Object[] {"Closed", boom1IdForUpdate });
 				if (i>0) {
 					//userRepository.save_key(obj3.getLc_name(), "Closed");
@@ -772,12 +830,12 @@ public class ProcessServiceImpl{
 					// Start health check when status becomes CLOSED (only if status changed from non-closed to closed)
 					if (previousStatus == null || !previousStatus.equalsIgnoreCase("Closed")) {
 						// Requirement: if GM controls multiple gates, update Boom_Lock for ALL gates under that GM that are currently CLOSED
-						if (obj3.getGm() != null && !obj3.getGm().trim().isEmpty()) {
-							boomLockHealthService.startHealthCheckForClosedGatesOfGM(obj3.getGm());
-							logger.info("Started boom lock health checks for GM: {} (trigger gate: {}, status changed to CLOSED)", obj3.getGm(), gate);
+						if (gmForUpdate != null && !gmForUpdate.trim().isEmpty()) {
+							boomLockHealthService.startHealthCheckForClosedGatesOfGM(gmForUpdate);
+							logger.info("Started boom lock health checks for GM: {} (trigger gate: {}, status changed to CLOSED)", gmForUpdate, gate);
 						} else {
 							// Fallback: start only for this gate
-						boomLockHealthService.startHealthCheck(gate);
+						boomLockHealthService.startHealthCheck(boom1IdForUpdate);
 							logger.info("Started boom lock health check for gate: {} (status changed to CLOSED, GM missing)", gate);
 						}
 					}
@@ -817,7 +875,7 @@ public class ProcessServiceImpl{
 				// This happens when train number was sent before sensors closed
 				// Check even if status was already "Closed" - we need to update train rows
 				String findCloseReportSql = "SELECT id, tn, pn, wer, sm, gm FROM reports WHERE command='Close' AND (tn IS NOT NULL AND tn != '') AND (lc=? OR lc_name=?) AND (lc_status IS NULL OR lc_status = '') AND added_on > DATE_SUB(NOW(), INTERVAL 30 MINUTE) ORDER BY added_on DESC LIMIT 1";
-				List<Map<String, Object>> closeReports = jdbcTemplate1.queryForList(findCloseReportSql, boom1IdForUpdate, obj3.getLc_name());
+				List<Map<String, Object>> closeReports = jdbcTemplate1.queryForList(findCloseReportSql, boom1IdForUpdate, gateNumForUpdate);
 				
 				Integer existingReportId = null;
 				String existingTn = null;
@@ -839,14 +897,14 @@ public class ProcessServiceImpl{
 				
 				// Validate required fields before creating/updating report
 				logger.info("Validating fields for Closed report - gate: {}, SM: '{}', GM: '{}', lc_name: '{}'", 
-					gate, obj3.getSm(), obj3.getGm(), obj3.getLc_name());
-				if (obj3.getSm() == null || obj3.getSm().isEmpty()) {
+					gate, smForUpdate, gmForUpdate, gateNumForUpdate);
+				if (smForUpdate == null || smForUpdate.isEmpty()) {
 					logger.error("Cannot create/update Closed report - SM is null or empty for gate: {}", gate);
 					reportExists = false;
-				} else if (obj3.getGm() == null || obj3.getGm().isEmpty()) {
+				} else if (gmForUpdate == null || gmForUpdate.isEmpty()) {
 					logger.error("Cannot create/update Closed report - GM is null or empty for gate: {}", gate);
 					reportExists = false;
-				} else if (obj3.getLc_name() == null || obj3.getLc_name().isEmpty()) {
+				} else if (gateNumForUpdate == null || gateNumForUpdate.isEmpty()) {
 					logger.error("Cannot create/update Closed report - lc_name is null or empty for gate: {}", gate);
 					reportExists = false;
 				} else {
@@ -856,10 +914,10 @@ public class ProcessServiceImpl{
 						logger.info("Updating existing 'Close' report (ID: {}) to 'Closed' for gate: {} (BOOM1_ID: {}, lc_name: {}). Preserving tn: {}, pn: {}, wer: {}. Previous status: {}", 
 							existingReportId, gate, boom1IdForUpdate, obj3.getLc_name(), existingTn, existingPn, existingWer, previousStatus);
 						try {
-							// Update existing report: change command to "Closed", set lc_status and lc_lock_time
+							// Update existing report: keep command as "Close", set lc_status and lc_lock_time
 							// Keep existing tn, pn, wer, sm, gm, etc.
 							int updateResult = jdbcTemplate1.update("UPDATE reports SET command=?, lc_status=?, lc_lock_time=? WHERE id=?",
-									"Closed", "Closed", time, existingReportId);
+									"Close", "Closed", time, existingReportId);
 							if (updateResult > 0) {
 								reportExists = true;
 								logger.info("SUCCESS: Updated existing 'Close' report (ID: {}) to 'Closed' for gate: {} (BOOM1_ID: {}, lc_name: {}). Update result: {}", 
@@ -868,8 +926,8 @@ public class ProcessServiceImpl{
 								// Ensure Boom_Lock is evaluated and written to the latest Closed row even if main status was already Closed.
 								// This is critical for the "train not sent" flow as well.
 								try {
-									if (obj3.getGm() != null && !obj3.getGm().trim().isEmpty()) {
-										boomLockHealthService.startHealthCheckForClosedGatesOfGM(obj3.getGm());
+									if (gmForUpdate != null && !gmForUpdate.trim().isEmpty()) {
+										boomLockHealthService.startHealthCheckForClosedGatesOfGM(gmForUpdate);
 									} else {
 										boomLockHealthService.startHealthCheck(boom1IdForUpdate);
 									}
@@ -896,12 +954,13 @@ public class ProcessServiceImpl{
 							try {
 								String recentClosedSql =
 									"SELECT id FROM reports " +
-									"WHERE (lc IN (?,?) OR lc_name IN (?,?)) " +
-									"AND UPPER(command)='CLOSED' " +
+									"WHERE gm = ? " +
+									"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+									"AND UPPER(lc_status)='CLOSED' " +
 									"AND added_on >= DATE_SUB(NOW(), INTERVAL 30 SECOND) " +
 									"ORDER BY added_on DESC LIMIT 1";
 								List<Map<String, Object>> recentClosed = jdbcTemplate1.queryForList(
-									recentClosedSql, boom1IdForUpdate, obj3.getLc_name(), boom1IdForUpdate, obj3.getLc_name()
+									recentClosedSql, gmForUpdate, boom1IdForUpdate, gateNumForUpdate, boom1IdForUpdate, gateNumForUpdate
 								);
 								if (recentClosed != null && !recentClosed.isEmpty()) {
 									logger.info("Status already 'Closed' and a recent Closed report exists (last 30s). Skipping Closed report creation for gate: {} (BOOM1_ID: {})",
@@ -917,7 +976,7 @@ public class ProcessServiceImpl{
 									String currentDateTime = sdfNow.format(new Date());
 									insertResult = jdbcTemplate1.update(
 										"insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-										"","",time,"Closed","",obj3.getSm(),obj3.getGm(),boom1IdForUpdate,obj3.getLc_name(),
+										"","",time,"Close","",smForUpdate,gmForUpdate,boom1IdForUpdate,gateNumForUpdate,
 										currentDateTime,"Closed",time,"","","","",""
 									);
 									if (insertResult > 0) {
@@ -926,8 +985,8 @@ public class ProcessServiceImpl{
 											gate, boom1IdForUpdate, obj3.getLc_name());
 										// Enqueue Boom_Lock update for latest Closed row
 										try {
-											if (obj3.getGm() != null && !obj3.getGm().trim().isEmpty()) {
-												boomLockHealthService.startHealthCheckForClosedGatesOfGM(obj3.getGm());
+											if (gmForUpdate != null && !gmForUpdate.trim().isEmpty()) {
+												boomLockHealthService.startHealthCheckForClosedGatesOfGM(gmForUpdate);
 											} else {
 												boomLockHealthService.startHealthCheck(boom1IdForUpdate);
 											}
@@ -950,7 +1009,7 @@ public class ProcessServiceImpl{
 								simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 								String currentDateTime = simpleDateFormat.format(new Date());
 								insertResult = jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-										"","",time,"Closed","",obj3.getSm(),obj3.getGm(),boom1IdForUpdate,obj3.getLc_name(),
+										"","",time,"Close","",smForUpdate,gmForUpdate,boom1IdForUpdate,gateNumForUpdate,
 										currentDateTime,"Closed",time,"","","","","s");
 								if (insertResult > 0) {
 									reportExists = true;
@@ -959,8 +1018,8 @@ public class ProcessServiceImpl{
 									
 									// Ensure Boom_Lock is evaluated and written to the latest Closed row (train sent or not)
 									try {
-										if (obj3.getGm() != null && !obj3.getGm().trim().isEmpty()) {
-											boomLockHealthService.startHealthCheckForClosedGatesOfGM(obj3.getGm());
+										if (gmForUpdate != null && !gmForUpdate.trim().isEmpty()) {
+											boomLockHealthService.startHealthCheckForClosedGatesOfGM(gmForUpdate);
 										} else {
 											boomLockHealthService.startHealthCheck(boom1IdForUpdate);
 										}
@@ -985,7 +1044,7 @@ public class ProcessServiceImpl{
 						// Check if there's a report with train number and empty PN for this gate
 						// This could be the report we just updated/created, or an existing one
 						String findTrainReportSql = "SELECT id, tn, pn, gm FROM reports WHERE (lc = ? OR lc_name = ?) AND (UPPER(command) = 'CLOSE' OR UPPER(command) = 'CLOSED') AND (tn IS NOT NULL AND tn != '') AND (pn IS NULL OR pn = '') AND gm = ? ORDER BY added_on DESC LIMIT 1";
-						List<Map<String, Object>> trainReports = jdbcTemplate1.queryForList(findTrainReportSql, boom1IdForUpdate, obj3.getLc_name(), obj3.getGm());
+						List<Map<String, Object>> trainReports = jdbcTemplate1.queryForList(findTrainReportSql, boom1IdForUpdate, gateNumForUpdate, gmForUpdate);
 						
 						if (trainReports != null && !trainReports.isEmpty()) {
 							Map<String, Object> trainReport = trainReports.get(0);
@@ -997,7 +1056,7 @@ public class ProcessServiceImpl{
 							if ((reportPn == null || reportPn.trim().isEmpty()) && reportTn != null && !reportTn.trim().isEmpty() && reportGm != null) {
 								logger.info("Gate closed - Found train report with empty PN for gate: {} (BOOM1_ID: {}), tn: {}, gm: {}. Triggering PN generation.", 
 									gate, boom1IdForUpdate, reportTn, reportGm);
-								pnGenerationService.generatePNIfNeeded(boom1IdForUpdate, reportGm, obj3.getSm());
+								pnGenerationService.generatePNIfNeeded(boom1IdForUpdate, reportGm, smForUpdate);
 							} else {
 								logger.debug("Gate closed - Train report already has PN or missing train number for gate: {} (BOOM1_ID: {}), pn: {}, tn: {}", 
 									gate, boom1IdForUpdate, reportPn, reportTn);
@@ -1021,19 +1080,15 @@ public class ProcessServiceImpl{
 				logger.info("Gate is OPEN - BS1: {}, BS2: {}, LS: {}", dbBs1Status, dbBs2Status, dbLeverStatus);
 				
 				// Get BOOM1_ID for update
-				String boom1IdForOpenUpdate = (String) statusRow.get("BOOM1_ID");
-				if (boom1IdForOpenUpdate == null || boom1IdForOpenUpdate.isEmpty()) {
-					boom1IdForOpenUpdate = obj3.getGate();
-					if (boom1IdForOpenUpdate == null || boom1IdForOpenUpdate.isEmpty()) {
-						try {
-							String getBoom1IdSql = "SELECT BOOM1_ID FROM managegates WHERE BOOM1_ID=? OR BOOM2_ID=? OR handle=? LIMIT 1";
-							boom1IdForOpenUpdate = (String) jdbcTemplate1.queryForObject(getBoom1IdSql, new Object[] {gate, gate, gate}, String.class);
-						} catch (Exception e) {
-							logger.warn("Could not get BOOM1_ID for gate: {}", gate);
-							boom1IdForOpenUpdate = gate;
-						}
-					}
-				}
+				String boom1IdForOpenUpdate = canonical.boom1Id != null ? canonical.boom1Id.trim() : null;
+				String gateNumForOpenUpdate = canonical.gateNum != null ? canonical.gateNum.trim() : obj3.getLc_name();
+				String gmForOpenUpdate = canonical.gm != null ? canonical.gm.trim() : obj3.getGm();
+				String smForOpenUpdate = canonical.sm != null ? canonical.sm.trim() : obj3.getSm();
+
+				if (gateNumForOpenUpdate != null && !gateNumForOpenUpdate.isEmpty()) obj3.setLc_name(gateNumForOpenUpdate);
+				if (gmForOpenUpdate != null && !gmForOpenUpdate.isEmpty()) obj3.setGm(gmForOpenUpdate);
+				if (smForOpenUpdate != null && !smForOpenUpdate.isEmpty()) obj3.setSm(smForOpenUpdate);
+				if (boom1IdForOpenUpdate != null && !boom1IdForOpenUpdate.isEmpty()) obj3.setGate(boom1IdForOpenUpdate);
 
 				String pattern = "yyyy-MM-dd HH:mm:ss";
 				SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
@@ -1048,8 +1103,8 @@ public class ProcessServiceImpl{
 					previousStatus, dbBs1Status, dbBs2Status, dbLeverStatus);
 				
 				// Update managegates status to Open
-				int statusUpdateResult = jdbcTemplate1.update("update managegates set status=? where (BOOM1_ID=? OR handle=?)",new Object[] 
-						{"Open", gate, gate});
+				int statusUpdateResult = jdbcTemplate1.update("update managegates set status=? where BOOM1_ID=?",new Object[] 
+						{"Open", boom1IdForOpenUpdate});
 				logger.info("Gate status update result: {}", statusUpdateResult);
 				
 				// Clear health check when status changes to Open
@@ -1070,19 +1125,19 @@ public class ProcessServiceImpl{
 						previousStatus, gate, boom1IdForOpenUpdate, obj3.getLc_name());
 					
 					// Validate required fields before creating report
-					if (obj3.getSm() == null || obj3.getSm().isEmpty()) {
+					if (smForOpenUpdate == null || smForOpenUpdate.isEmpty()) {
 						logger.error("Cannot create Open report - SM is null or empty for gate: {}", gate);
-					} else if (obj3.getGm() == null || obj3.getGm().isEmpty()) {
+					} else if (gmForOpenUpdate == null || gmForOpenUpdate.isEmpty()) {
 						logger.error("Cannot create Open report - GM is null or empty for gate: {}", gate);
-					} else if (obj3.getLc_name() == null || obj3.getLc_name().isEmpty()) {
+					} else if (gateNumForOpenUpdate == null || gateNumForOpenUpdate.isEmpty()) {
 						logger.error("Cannot create Open report - lc_name is null or empty for gate: {}", gate);
 					} else {
 						logger.info("Creating new Open report for gate: {} (BOOM1_ID: {}, lc_name: {}, sm: {}, gm: {}, time: {}, previousStatus: {})", 
-							gate, boom1IdForOpenUpdate, obj3.getLc_name(), obj3.getSm(), obj3.getGm(), time1, previousStatus);
+							gate, boom1IdForOpenUpdate, gateNumForOpenUpdate, smForOpenUpdate, gmForOpenUpdate, time1, previousStatus);
 						try {
 							insertreports(obj3, time1, "");
 							logger.info("SUCCESS: Created new Open report for gate: {} (BOOM1_ID: {}, lc_name: {})", 
-								gate, boom1IdForOpenUpdate, obj3.getLc_name());
+								gate, boom1IdForOpenUpdate, gateNumForOpenUpdate);
 						} catch (Exception e) {
 							logger.error("EXCEPTION: Error creating Open report for gate: {} (BOOM1_ID: {})", gate, boom1IdForOpenUpdate, e);
 						}
@@ -1162,9 +1217,9 @@ public class ProcessServiceImpl{
 		logger.info("get manage data for gate: {}", gate);
 
 		API obj = null;
-		// Check BOOM1_ID, BOOM2_ID, or handle to find the gate
-		String sql = "select * from managegates where BOOM1_ID=? OR BOOM2_ID=? OR handle=?";
-		List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql,gate,gate,gate);
+		// Check BOOM1_ID, BOOM2_ID, handle, or LTSW_ID to find the gate
+		String sql = "select * from managegates where BOOM1_ID=? OR BOOM2_ID=? OR handle=? OR LTSW_ID=? LIMIT 1";
+		List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql,gate,gate,gate,gate);
 		logger.info("Inside"+rows.size());
 
 		if (rows == null || rows.isEmpty()) {

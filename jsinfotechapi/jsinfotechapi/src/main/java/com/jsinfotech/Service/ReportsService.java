@@ -322,6 +322,147 @@ public class ReportsService {
 
 	}
 
+	/**
+	 * GM-scoped reports using SM ownership.
+	 *
+	 * For some deployments, gates under a station may be assigned to multiple GM usernames
+	 * (e.g., PURA_GM, PURA_GM2, PURA_GM3) while sharing the same SM (e.g., PURA_SM).
+	 * In that scenario, filtering reports by gm=username hides other gates in printed reports.
+	 *
+	 * This method expands the report selection to all reports belonging to SM(s) mapped
+	 * to the provided GM username via managegates.
+	 *
+	 * Safe fallback: if no SM is mapped, it returns the same result as findByUsernamegm().
+	 */
+	public List<Reports> findByGmUsingSmScope(String username, String role) {
+		try {
+			if (username == null || username.trim().isEmpty()) {
+				return new ArrayList<>();
+			}
+
+			// Find SM(s) linked to this GM from managegates
+			List<Map<String, Object>> smRows = jdbcTemplate1.queryForList(
+					"SELECT DISTINCT SM FROM managegates WHERE GM = ?",
+					username);
+
+			List<String> sms = new ArrayList<>();
+			if (smRows != null) {
+				for (Map<String, Object> row : smRows) {
+					if (row == null) {
+						continue;
+					}
+					Object smObj = row.get("SM");
+					if (smObj == null) {
+						smObj = row.get("sm");
+					}
+					if (smObj != null) {
+						String sm = smObj.toString().trim();
+						if (!sm.isEmpty()) {
+							sms.add(sm);
+						}
+					}
+				}
+			}
+
+			// If no SM mapping exists, fall back to current GM-only behavior
+			if (sms.isEmpty()) {
+				return findByUsernamegm(username, role);
+			}
+
+			SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+			Calendar cal = Calendar.getInstance();
+			cal.add(Calendar.HOUR_OF_DAY, -12);
+			String twelveHoursAgoString = formatter.format(cal.getTime());
+
+			MapSqlParameterSource parameters = new MapSqlParameterSource();
+			parameters.addValue("sms", sms);
+			parameters.addValue("added_on", twelveHoursAgoString);
+
+			String query = "select * from reports where sm in (:sms) and added_on>=(:added_on) order by id DESC";
+			return jdbcTemplate.query(query, parameters, new RowMapper<Reports>() {
+				@Override
+				public Reports mapRow(ResultSet rs, int i) throws SQLException {
+					Reports customer = new Reports();
+					String ackn = rs.getString("ackn");
+					String lc_stat = rs.getString("lc_status");
+					String lc_pin = rs.getString("lc_pin");
+					String lc_name = rs.getString("lc_name");
+					customer.setLc(rs.getString("lc"));
+
+					// Handle null for lc_lock_time
+					String lc_lock_time = rs.getString("lc_lock_time");
+					if (lc_lock_time == null) {
+						lc_lock_time = "";
+					}
+
+					// Handle null for lc_open_time
+					String lc_open_time = rs.getString("lc_open_time");
+					if (lc_open_time == null) {
+						lc_open_time = "";
+					}
+
+					String tn = rs.getString("tn");
+					if (tn != null && tn.length() > 5) {
+						tn = tn.substring(0, 5);
+					}
+					if (tn == null) {
+						tn = "";
+					}
+					customer.setId(i + 1);
+					customer.setLc_name(lc_name);
+					customer.setTn(tn + " " + "[" + rs.getString("wer") + "]");
+					customer.setCommand(rs.getString("command"));
+					customer.setPn(rs.getString("pn") + " " + "[" + rs.getString("tn_time") + "]");
+
+					// Handle null for lc_stat
+					if (lc_stat == null) {
+						lc_stat = "";
+					}
+
+					if (lc_stat.equalsIgnoreCase("Closed")) {
+						customer.setLc_status(lc_stat + "" + "[" + lc_lock_time + "]");
+					} else {
+						customer.setLc_status(lc_stat + "" + "[" + lc_open_time + "]");
+					}
+					customer.setLc_lock_time(lc_lock_time);
+
+					// Handle null for lc_pin
+					if (lc_pin == null) {
+						lc_pin = "";
+					}
+
+					// Handle null for lc_pin_time
+					String lc_pin_time = rs.getString("lc_pin_time");
+					if (lc_pin_time == null) {
+						lc_pin_time = "";
+					}
+
+					customer.setLc_pin(lc_pin + "" + "[" + lc_pin_time + "]");
+					customer.setAckn(ackn != null ? ackn : "");
+					customer.setSm(rs.getString("sm"));
+
+					String lc_open_time_val = rs.getString("lc_open_time");
+					if (lc_open_time_val == null) {
+						lc_open_time_val = "";
+					}
+					customer.setLc_open_time(lc_open_time_val);
+
+					// Handle null for Boom_Lock - set to empty string if null
+					String boomLock = rs.getString("Boom_Lock");
+					if (boomLock == null) {
+						boomLock = "";
+					}
+					customer.setBoomLock(boomLock);
+
+					return customer;
+				}
+			});
+		} catch (Exception e) {
+			logger.error("Error getting SM-scoped reports for GM: {}", username, e);
+			return findByUsernamegm(username, role);
+		}
+	}
+
 
 	public void add(Reports reports) {
 		String pattern = "yyyy-MM-dd hh:mm:ss";

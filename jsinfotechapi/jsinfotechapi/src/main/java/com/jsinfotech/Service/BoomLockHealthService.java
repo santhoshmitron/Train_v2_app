@@ -433,7 +433,7 @@ public class BoomLockHealthService {
                             }
                             
                             if (isFirstCheck && !statusChanged) {
-                                // First check: UPDATE the latest CLOSED status row (most recent command='Closed') for this gate
+                                // First check: UPDATE the latest CLOSED status row for this gate
                                 // ONLY if status has NOT changed
                                 logger.info("First Boom_Lock check for gate: {} (BOOM1_ID: {}). Current status: {}. Updating train report row.", 
                                     gateId, boom1Id, currentBoomLockStatus);

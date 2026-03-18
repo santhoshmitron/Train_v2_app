@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.TimeZone;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -78,6 +79,89 @@ public class ManageGatesService {
 	public static Map<String,Integer> status = new HashMap<String, Integer>();
 	public static Map<String,String> reportid = new HashMap<String, String>();
 	public static Map<String,String> reportid1 = new HashMap<String, String>();
+
+	private static final class CanonicalGateRow {
+		private final String boom1Id;
+		private final String gateNum;
+		private final String sm;
+		private final String gm;
+
+		private CanonicalGateRow(String boom1Id, String gateNum, String sm, String gm) {
+			this.boom1Id = boom1Id;
+			this.gateNum = gateNum;
+			this.sm = sm;
+			this.gm = gm;
+		}
+	}
+
+	private CanonicalGateRow resolveCanonicalGateRow(String anyGateId) {
+		if (anyGateId == null || anyGateId.trim().isEmpty()) {
+			return null;
+		}
+		String gid = anyGateId.trim();
+		String sql =
+			"SELECT BOOM1_ID, Gate_Num, SM, GM " +
+			"FROM managegates " +
+			"WHERE BOOM1_ID=? OR BOOM2_ID=? OR handle=? OR LTSW_ID=? " +
+			"LIMIT 1";
+		List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gid, gid, gid, gid);
+		if ((rows == null || rows.isEmpty()) && gid.endsWith("1")) {
+			String gidNoOne = gid.substring(0, gid.length() - 1);
+			rows = jdbcTemplate1.queryForList(sql, gidNoOne, gidNoOne, gidNoOne, gidNoOne);
+		}
+		if (rows == null || rows.isEmpty()) {
+			return null;
+		}
+		Map<String, Object> row = rows.get(0);
+		String boom1Id = row.get("BOOM1_ID") != null ? row.get("BOOM1_ID").toString() : null;
+		String gateNum = row.get("Gate_Num") != null ? row.get("Gate_Num").toString() : null;
+		String sm = row.get("SM") != null ? row.get("SM").toString() : null;
+		String gm = row.get("GM") != null ? row.get("GM").toString() : null;
+		return new CanonicalGateRow(boom1Id, gateNum, sm, gm);
+	}
+
+	private void insertClosedReportIfNeeded(CanonicalGateRow cg, String lockTime) {
+		if (cg == null) return;
+		if (cg.gm == null || cg.gm.trim().isEmpty()) return;
+		if (cg.sm == null || cg.sm.trim().isEmpty()) return;
+		if (cg.gateNum == null || cg.gateNum.trim().isEmpty()) return;
+		if (cg.boom1Id == null || cg.boom1Id.trim().isEmpty()) return;
+
+		// Dedupe per GM + gate (last 30 seconds)
+		try {
+			String dedupeSql =
+				"SELECT id FROM reports " +
+				"WHERE gm=? AND lc_name=? " +
+				"AND UPPER(lc_status)='CLOSED' " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 30 SECOND) " +
+				"ORDER BY id DESC LIMIT 1";
+			List<Map<String, Object>> recent = jdbcTemplate1.queryForList(dedupeSql, cg.gm.trim(), cg.gateNum.trim());
+			if (recent != null && !recent.isEmpty()) {
+				return;
+			}
+		} catch (Exception e) {
+			// If dedupe fails, proceed to insert (better to have a report than miss it)
+		}
+
+		try {
+			SimpleDateFormat addedOnFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+			addedOnFmt.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
+			String addedOn = addedOnFmt.format(new Date());
+
+			String tnTime = lockTime != null ? lockTime : "";
+			jdbcTemplate1.update(
+				"insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name, added_on, lc_status, lc_lock_time, lc_pin, lc_pin_time, ackn, lc_open_time, redy) " +
+				"values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+				"", "", tnTime, "Close", "",
+				cg.sm.trim(), cg.gm.trim(),
+				cg.boom1Id.trim(), cg.gateNum.trim(),
+				addedOn, "Closed", tnTime,
+				"", "", "", "", "s"
+			);
+		} catch (Exception e) {
+			logger.warn("Failed to insert Closed report for gm={}, gateNum={}, boom1Id={}", cg.gm, cg.gateNum, cg.boom1Id, e);
+		}
+	}
 
 
 
@@ -207,9 +291,12 @@ public class ManageGatesService {
 			  // Only set reportId and pn when status is "closed"
 			  String currentStatus = m.getStatus();
 			  if(currentStatus != null && currentStatus.equalsIgnoreCase("closed")) {
-				  // Always use the LATEST Closed report row for this gate (by lc_status),
-				  // not an older "pending PN" row. This ensures getstatus returns the latest reportId only.
-				  String id = findLatestClosedReportIdForGate(username, m.getBoom1Id(), m.getGateNum());
+				  // Prefer the oldest Closed report for this gate that has tn but is missing lc_pin,
+				  // so GM is prompted to send PN for older reports first. When none remain, use latest Closed.
+				  String id = findOldestClosedReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
+				  if (id == null) {
+					  id = findLatestClosedReportIdForGate(username, m.getBoom1Id(), m.getGateNum());
+				  }
 				  
 				   if(id!=null) {
 					 // Set reportId field (previously misused as bs1Go)
@@ -356,9 +443,42 @@ public class ManageGatesService {
 	}
 
 	/**
+	 * Return the oldest reports.id for this GM + gate that is Closed, has train (tn), and is missing lc_pin.
+	 * Used so getstatus shows the next report that needs PN until all such reports have lc_pin; then we fall back to latest.
+	 */
+	private String findOldestClosedReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
+		try {
+			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
+			String gn = (gateNum != null) ? gateNum.trim() : "";
+			if (b1.isEmpty() && gn.isEmpty()) {
+				return null;
+			}
+			String sql =
+				"SELECT id FROM reports " +
+				"WHERE gm = ? " +
+				"AND (UPPER(lc_status) = 'CLOSED' OR UPPER(command) = 'CANCEL') " +
+				"AND (tn IS NOT NULL AND tn != '') " +
+				"AND (lc_pin IS NULL OR lc_pin = '') " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
+				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+				"ORDER BY id ASC " +
+				"LIMIT 1";
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gmUsername, b1, gn, b1, gn);
+			if (rows == null || rows.isEmpty()) {
+				return null;
+			}
+			Object idObj = rows.get(0).get("id");
+			return idObj != null ? idObj.toString() : null;
+		} catch (Exception e) {
+			logger.warn("Error finding oldest Closed reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
+			return null;
+		}
+	}
+
+	/**
 	 * Return the latest reports.id for this GM + gate where lc_status is Closed (case-insensitive).
 	 * Uses both BOOM1_ID and Gate_Num matches against reports.lc and reports.lc_name.
-	 * This is used for GM getstatus response so we always show ONLY the latest reportId per gate.
+	 * This is used for GM getstatus response when no report is missing lc_pin (show latest).
 	 */
 	private String findLatestClosedReportIdForGate(String gmUsername, String boom1Id, String gateNum) {
 		try {
@@ -372,7 +492,7 @@ public class ManageGatesService {
 			String sql =
 				"SELECT id FROM reports " +
 				"WHERE gm = ? " +
-				"AND UPPER(lc_status) = 'CLOSED' " +
+				"AND (UPPER(lc_status) = 'CLOSED' OR UPPER(command) = 'CANCEL') " +
 				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
 				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
 				"ORDER BY added_on DESC, id DESC " +
@@ -1047,7 +1167,10 @@ public class ManageGatesService {
 			String s1=obj3.getBs1Status();
 			String s2=obj3.getLeverStatus();
 			if (s1.equals(s2)) {
-				int i = jdbcTemplate1.update("update managegates set status=?  where BOOM1_ID=? OR handle=?",new Object[] {"Closed",gate,gate });
+				String gateKey = String.valueOf(gate);
+				CanonicalGateRow cg = resolveCanonicalGateRow(gateKey);
+				String boom1Id = (cg != null && cg.boom1Id != null && !cg.boom1Id.trim().isEmpty()) ? cg.boom1Id.trim() : gateKey;
+				int i = jdbcTemplate1.update("update managegates set status=?  where BOOM1_ID=?",new Object[] {"Closed", boom1Id });
 				if (i > 0) {
 					logger.info("[GATE] [{}] main status updated to Closed", gate);
 				} else {
@@ -1058,7 +1181,7 @@ public class ManageGatesService {
 				simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 				String date = simpleDateFormat.format(new Date());
 
-				String pattern1 = "hh:mm:ss";
+				String pattern1 = "HH:mm";
 				SimpleDateFormat simpleDateFormat1 = new SimpleDateFormat(pattern1);
 				simpleDateFormat1.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 				String time = simpleDateFormat1.format(new Date());
@@ -1071,6 +1194,8 @@ public class ManageGatesService {
 					logger.warn("[GATE] [{}] FAILED to update lc_lock_time", gate);
 				}
 
+				// Ensure a Closed report row exists for this gate+GM (GM2/GM3/GM4 were missing these)
+				insertClosedReportIfNeeded(cg, time);
 
 			}
 

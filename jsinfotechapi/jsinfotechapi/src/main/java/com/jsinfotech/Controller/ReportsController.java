@@ -35,7 +35,12 @@ public class ReportsController {
 
 	
 	@RequestMapping(value = "/getreports/{username}/role/{role}", method = RequestMethod.GET)
-	public ResponseReport getReports(@PathVariable("username") String username,@PathVariable("role") String role,@RequestParam(name = "from",required= false,defaultValue = "t") String from,@RequestParam(name = "to",required= false,defaultValue="") String to)
+	public ResponseReport getReports(
+			@PathVariable("username") String username,
+			@PathVariable("role") String role,
+			@RequestParam(name = "from", required = false, defaultValue = "t") String from,
+			@RequestParam(name = "to", required = false, defaultValue = "") String to,
+			@RequestParam(name = "scope", required = false, defaultValue = "gm") String scope)
 	{
 		
 		ResponseReport report = new ResponseReport();
@@ -61,7 +66,11 @@ public class ReportsController {
 					commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
 					
 					report.setPlay_command(commands);
-					report.setReport(Service.findByUsernamegm(username,role));
+					if ("sm".equalsIgnoreCase(scope)) {
+						report.setReport(Service.findByGmUsingSmScope(username, role));
+					} else {
+						report.setReport(Service.findByUsernamegm(username,role));
+					}
 					System.out.println("GetReportsg"+username+role);
 
 					return report;

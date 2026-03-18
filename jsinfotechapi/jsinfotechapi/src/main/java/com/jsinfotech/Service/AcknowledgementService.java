@@ -71,8 +71,8 @@ public class AcknowledgementService {
 		String date1 = simpleDateFormat.format(current.getTime());
 		parameters.addValue("today", date1);
 		System.out.println("parameters" + parameters.getValue("userId") + parameters.getValue("today"));
-		// Include 'Closed' so that when gate is already closed and close command is sent, mobile gets a report to ack and plays "acknowledged" sound
-		String SQL = "select * from reports where (command='Close' or command='Cancel' or command='Closed') and ackn='' and redy='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
+		// Close flow: command stays 'Close'; lc_status indicates 'Closed'
+		String SQL = "select * from reports where (command='Close' or command='Cancel') and ackn='' and redy='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
 
 		List<Reports> reports = jdbcTemplate.query(SQL, parameters, new RowMapper<Reports>() {
 			@Override
@@ -116,8 +116,8 @@ public class AcknowledgementService {
 		String date1 = simpleDateFormat.format(current.getTime());
 		parameters.addValue("today", date1);
 		System.out.println("parameters" + parameters.getValue("userId") + parameters.getValue("today"));
-		// Include 'Closed' so that when gate is already closed, mobile gets report to ack and gets "acknowledged" sound
-		String SQL = "select * from reports where command in ('Close','Cancel','Closed') and ackn='' and gm=(:userId) and added_on >(:today) order by id asc limit 1";
+		// Close flow: command stays 'Close'; lc_status indicates 'Closed'
+		String SQL = "select * from reports where command in ('Close','Cancel') and ackn='' and gm=(:userId) and added_on >(:today) order by id asc limit 1";
 		
 		//String SQL1 = "select * from reports where command='Cancel' and ackn='' and gm=(:userId) and added_on >(:today) order by id DESC limit 1";
 
@@ -265,15 +265,15 @@ public class AcknowledgementService {
 		}
 		ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
 		String format3 = now.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH));
-		int i = jdbcTemplate1.update("update reports set lc_pin = ? ,lc_pin_time = ? where id = ? and UPPER(lc_status) = ?",
-				new Object[] { pn, format3, id ,"CLOSED" });
+		int i = jdbcTemplate1.update(
+			"update reports set lc_pin = ? ,lc_pin_time = ? where id = ? and (UPPER(lc_status) = ? OR UPPER(command) = ?)",
+			new Object[] { pn, format3, id, "CLOSED", "CANCEL" });
 		String st = String.valueOf(i);
 		//ManageGatesService.reportid.remove(st);
 		// Clear GM expected PN mapping once lc_pin is successfully stored
 		if (i == 1) {
 			userRepository.deleteReportIdGmPN(reportId);
-		}
-		if (i == 1) {
+			backfillMissingLcPinForSameGate(id);
 			updateQ(id,"PN");
 			
 			return true;
@@ -284,6 +284,94 @@ public class AcknowledgementService {
 
 	}
 
+	/**
+	 * After GM sends PN for the latest report, fill lc_pin for all older Closed reports
+	 * of the same gate+GM that are still missing lc_pin. Each backfilled PN is unique (24h).
+	 */
+	private void backfillMissingLcPinForSameGate(int currentReportId) {
+		try {
+			String rowSql = "SELECT gm, lc, lc_name FROM reports WHERE id = ? LIMIT 1";
+			List<Map<String, Object>> currentRow = jdbcTemplate1.queryForList(rowSql, currentReportId);
+			if (currentRow == null || currentRow.isEmpty()) return;
+			Map<String, Object> row = currentRow.get(0);
+			String gm = row.get("gm") != null ? row.get("gm").toString().trim() : null;
+			String lc = row.get("lc") != null ? row.get("lc").toString().trim() : null;
+			String lcName = row.get("lc_name") != null ? row.get("lc_name").toString().trim() : null;
+			if (gm == null || gm.isEmpty() || (lc == null || lc.isEmpty()) && (lcName == null || lcName.isEmpty())) return;
+
+			String boom1Id = (lc != null && !lc.isEmpty()) ? lc : lcName;
+			String gateNum = (lcName != null && !lcName.isEmpty()) ? lcName : lc;
+
+			String missingSql =
+				"SELECT id FROM reports WHERE id < ? AND gm = ? " +
+				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+				"AND UPPER(lc_status) = 'CLOSED' " +
+				"AND (lc_pin IS NULL OR lc_pin = '') " +
+				"ORDER BY id ASC";
+			List<Map<String, Object>> missing = jdbcTemplate1.queryForList(missingSql,
+				currentReportId, gm, boom1Id, gateNum, boom1Id, gateNum);
+
+			if (missing == null || missing.isEmpty()) return;
+
+			ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
+			String lcPinTime = now.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH));
+			String gateKey = (boom1Id != null && !boom1Id.isEmpty()) ? boom1Id : gateNum;
+
+			for (Map<String, Object> m : missing) {
+				Object idObj = m.get("id");
+				if (idObj == null) continue;
+				int olderId = ((Number) idObj).intValue();
+				String uniquePn = null;
+				for (int attempt = 0; attempt < 15; attempt++) {
+					String candidate = pnGenerationService.generateUniquePNForGate(gateKey);
+					if (candidate != null && !candidate.trim().isEmpty()) {
+						uniquePn = candidate.trim();
+						break;
+					}
+				}
+				if (uniquePn == null) uniquePn = pnGenerationService.generateUniquePNForGate(gateKey);
+				if (uniquePn == null || uniquePn.isEmpty()) continue;
+				try {
+					userRepository.markPNAsUsed(gateKey, uniquePn);
+					if (gateNum != null && !gateNum.isEmpty() && !gateNum.equals(gateKey)) {
+						userRepository.markPNAsUsed(gateNum, uniquePn);
+					}
+				} catch (Exception e) { /* continue */ }
+				int up = jdbcTemplate1.update("UPDATE reports SET lc_pin = ?, lc_pin_time = ? WHERE id = ? AND (lc_pin IS NULL OR lc_pin = '')",
+					uniquePn, lcPinTime, olderId);
+				if (up <= 0) continue;
+			}
+		} catch (Exception e) {
+			// Don't fail sendpn if backfill fails
+		}
+	}
+
+	/*
+	 * Validation DB queries (run after sendpn backfill to confirm correctness):
+	 *
+	 * 1) All Closed reports for a gate+gm in last 24h have lc_pin set:
+	 *    SELECT id, gm, lc, lc_name, lc_status, lc_pin, lc_pin_time, added_on
+	 *    FROM reports
+	 *    WHERE gm = :gm AND (lc = :boom1Id OR lc_name = :gateNum)
+	 *      AND UPPER(lc_status) = 'CLOSED'
+	 *      AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+	 *    ORDER BY id ASC;
+	 *
+	 * 2) No duplicate lc_pin per gate in last 24h (duplicates would indicate a bug):
+	 *    SELECT lc, lc_name, lc_pin, COUNT(*) AS cnt
+	 *    FROM reports
+	 *    WHERE (lc_pin IS NOT NULL AND lc_pin != '')
+	 *      AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+	 *    GROUP BY lc, lc_name, lc_pin
+	 *    HAVING COUNT(*) > 1;
+	 *    (Expected: 0 rows.)
+	 *
+	 * 3) All lc_pin values are 3-digit, no zero (111-999, digits 1-9 only):
+	 *    SELECT id, lc_pin FROM reports
+	 *    WHERE lc_pin IS NOT NULL AND lc_pin != ''
+	 *      AND (LENGTH(lc_pin) != 3 OR lc_pin REGEXP '[0]');
+	 *    (Expected: 0 rows.)
+	 */
 	private static boolean isValidThreeDigitNoZeroPN(int pn) {
 		if (pn < 111 || pn > 999) return false;
 		return String.valueOf(pn).indexOf('0') < 0;
