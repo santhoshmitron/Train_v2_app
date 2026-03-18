@@ -305,7 +305,8 @@ public class AcknowledgementService {
 			String missingSql =
 				"SELECT id FROM reports WHERE id < ? AND gm = ? " +
 				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
-				"AND UPPER(lc_status) = 'CLOSED' " +
+				"AND (UPPER(lc_status) = 'CLOSED' OR UPPER(command) = 'CANCEL') " +
+				"AND (tn IS NOT NULL AND tn != '') " +
 				"AND (lc_pin IS NULL OR lc_pin = '') " +
 				"ORDER BY id ASC";
 			List<Map<String, Object>> missing = jdbcTemplate1.queryForList(missingSql,
