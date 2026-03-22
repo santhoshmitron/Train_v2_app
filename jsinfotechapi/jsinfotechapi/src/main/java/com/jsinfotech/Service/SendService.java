@@ -459,10 +459,27 @@ public class SendService {
 			obj.setBs1Status((String) row.get("BS1_STATUS"));
 			obj.setGM((String) row.get("GM"));
 			obj.setAdded_on(new Date());
-			jdbcTemplate.update("update reports set ackn=? where tn=? and command=? and sm=? and added_on > ?","00:00",send.getTn(),"Close",send.getUser(),date);
+
+			// If gate main status is closed, mark Cancel report as Closed with lock time.
+			String mainStatus = "";
+			Object statusObj = row.get("status");
+			if (statusObj == null) {
+				statusObj = row.get("STATUS");
+			}
+			if (statusObj != null) {
+				mainStatus = statusObj.toString();
+			}
+			boolean isClosed = mainStatus != null && mainStatus.equalsIgnoreCase("closed");
+			String cancelLcStatus = isClosed ? "Closed" : "";
+			String cancelLcLockTime = isClosed ? format3 : "";
+
+			// IMPORTANT: Do not auto-fill ackn. ackn must remain empty until user explicitly acknowledges via ACK.
+			// The previous update set ackn='00:00' for all matching Close rows (by tn+sm), which incorrectly marked
+			// unrelated gates/reports as acknowledged.
+			// jdbcTemplate.update("update reports set ackn=? where tn=? and command=? and sm=? and added_on > ?","00:00",send.getTn(),"Close",send.getUser(),date);
 			jdbcTemplate.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 					send.getTn(),pnlist[count],format3,"Cancel",send.getWer(),send.getUser(),obj.getGM(),obj.getBoom1Id(),obj.getGateNum(),
-					date1,"","","","","","",""
+					date1,cancelLcStatus,cancelLcLockTime,"","","","",""
 					);
 			Gate gate1 = new Gate(obj.getGateNum(), obj.getBoom1Id(), String.valueOf("500"),String.valueOf("500"));
 			gate1.setBatch("Train");

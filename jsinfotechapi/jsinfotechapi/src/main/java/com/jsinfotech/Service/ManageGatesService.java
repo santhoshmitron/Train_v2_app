@@ -419,9 +419,58 @@ public class ManageGatesService {
 					   m.setPn(null);
 				   }
 			  } else {
-				  // Status is "open" or not "closed", set reportId and pn to null
-				  m.setReportId(null);
-				  m.setPn(null);
+				  // Status is "open" or not "closed".
+				  // For Cancel reports, GM must still be able to send PN even when the gate is open.
+				  String cancelId = findOldestCancelReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
+				  if (cancelId != null) {
+					  m.setReportId(cancelId);
+					  m.setBs1Go(cancelId); // backward compatibility
+					  
+					  // Reuse the same gm_pn exposure rules as Closed flow:
+					  // require tn present, lc_pin empty, ackn present.
+					  boolean hasTn = reportHasNonEmptyTn(cancelId);
+					  boolean hasLcPin = reportHasNonEmptyLcPin(cancelId);
+					  boolean hasAckn = reportHasNonEmptyAckn(cancelId);
+					  if (!hasTn || hasLcPin || !hasAckn) {
+						  m.setPn(null);
+						  m.setBs1Gc(null);
+					  } else {
+						  String st = userRepository.findReportIdGmPN(cancelId);
+						  if (st == null || st.trim().isEmpty()) {
+							  try {
+								  String smPn = getPnFromDatabase(cancelId);
+								  String gmPn = null;
+								  for (int attempt = 0; attempt < 10; attempt++) {
+									  String candidate = pnGenerationService.generateUniquePNForGate(m.getBoom1Id());
+									  if (smPn == null || smPn.trim().isEmpty() || !candidate.equals(smPn.trim())) {
+										  gmPn = candidate;
+										  break;
+									  }
+								  }
+								  if (gmPn == null) {
+									  gmPn = pnGenerationService.generateUniquePNForGate(m.getBoom1Id());
+								  }
+								  st = gmPn;
+								  userRepository.saveReportIdGmPN(cancelId, st);
+								  try {
+									  userRepository.markPNAsUsed(m.getBoom1Id(), st);
+									  if (m.getGateNum() != null && !m.getGateNum().trim().isEmpty()) {
+										  userRepository.markPNAsUsed(m.getGateNum(), st);
+									  }
+								  } catch (Exception ignore) {}
+							  } catch (Exception e) {
+								  logger.warn("Failed to generate GM PN for Cancel reportId: {}, gate: {} (BOOM1_ID: {})",
+									  cancelId, m.getGateNum(), m.getBoom1Id(), e);
+							  }
+						  }
+						  m.setPn(st);
+						  m.setBs1Gc(st);
+					  }
+				  } else {
+					  // No pending Cancel missing PN: set reportId and pn to null (current behavior)
+					  m.setReportId(null);
+					  m.setPn(null);
+				  }
 				  
 				  // For open gates, get play command based on main status (no specific reportId)
 				  try {
@@ -471,6 +520,39 @@ public class ManageGatesService {
 			return idObj != null ? idObj.toString() : null;
 		} catch (Exception e) {
 			logger.warn("Error finding oldest Closed reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
+			return null;
+		}
+	}
+
+	/**
+	 * Return the oldest reports.id for this GM + gate that is a Cancel report, has train (tn),
+	 * and is missing lc_pin. This must be shown even when main status is Open.
+	 */
+	private String findOldestCancelReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
+		try {
+			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
+			String gn = (gateNum != null) ? gateNum.trim() : "";
+			if (b1.isEmpty() && gn.isEmpty()) {
+				return null;
+			}
+			String sql =
+				"SELECT id FROM reports " +
+				"WHERE gm = ? " +
+				"AND UPPER(command) = 'CANCEL' " +
+				"AND (tn IS NOT NULL AND tn != '') " +
+				"AND (lc_pin IS NULL OR lc_pin = '') " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
+				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
+				"ORDER BY id ASC " +
+				"LIMIT 1";
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gmUsername, b1, gn, b1, gn);
+			if (rows == null || rows.isEmpty()) {
+				return null;
+			}
+			Object idObj = rows.get(0).get("id");
+			return idObj != null ? idObj.toString() : null;
+		} catch (Exception e) {
+			logger.warn("Error finding oldest Cancel reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
 			return null;
 		}
 	}

@@ -110,12 +110,34 @@ public class ReportsService {
                 if(tn == null) {
                 	tn = "";
                 }
+				String redy = rs.getString("redy");
+				boolean redyIsCt = redy != null && redy.trim().equalsIgnoreCase("ct");
+				String commandVal = rs.getString("command");
+				if (commandVal == null) {
+					commandVal = "";
+				}
+				String pnVal = rs.getString("pn");
+				if (pnVal == null) {
+					pnVal = "";
+				}
+				String tnTimeVal = rs.getString("tn_time");
+				if (tnTimeVal == null) {
+					tnTimeVal = "";
+				}
+				// If tn is empty, hide command + SM PN in report output (printing only),
+				// except when redy=ct where we still want to show command + SM PN.
+				if (tn.trim().isEmpty() && !redyIsCt) {
+					customer.setCommand("");
+					customer.setPn("");
+				}
 				//customer.setId(rs.getInt("id"));
                 customer.setId(i+1);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				customer.setCommand(rs.getString("command"));
-				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				if (!tn.trim().isEmpty() || redyIsCt) {
+					customer.setCommand(commandVal);
+					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
+				}
 				// Handle null for lc_stat - set to empty string if null
 				if(lc_stat == null) {
 					lc_stat = "";
@@ -230,12 +252,34 @@ public class ReportsService {
                 if(tn == null) {
                 	tn = "";
                 }
+				String redy = rs.getString("redy");
+				boolean redyIsCt = redy != null && redy.trim().equalsIgnoreCase("ct");
+				String commandVal = rs.getString("command");
+				if (commandVal == null) {
+					commandVal = "";
+				}
+				String pnVal = rs.getString("pn");
+				if (pnVal == null) {
+					pnVal = "";
+				}
+				String tnTimeVal = rs.getString("tn_time");
+				if (tnTimeVal == null) {
+					tnTimeVal = "";
+				}
+				// If tn is empty, hide command + SM PN in report output (printing only),
+				// except when redy=ct where we still want to show command + SM PN.
+				if (tn.trim().isEmpty() && !redyIsCt) {
+					customer.setCommand("");
+					customer.setPn("");
+				}
 				//customer.setId(rs.getInt("id"));
                 customer.setId(i+1);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				customer.setCommand(rs.getString("command"));
-				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				if (!tn.trim().isEmpty() || redyIsCt) {
+					customer.setCommand(commandVal);
+					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
+				}
 				
 				// Handle null for lc_stat
 				if(lc_stat == null) {
@@ -408,11 +452,33 @@ public class ReportsService {
 					if (tn == null) {
 						tn = "";
 					}
+					String redy = rs.getString("redy");
+					boolean redyIsCt = redy != null && redy.trim().equalsIgnoreCase("ct");
+					String commandVal = rs.getString("command");
+					if (commandVal == null) {
+						commandVal = "";
+					}
+					String pnVal = rs.getString("pn");
+					if (pnVal == null) {
+						pnVal = "";
+					}
+					String tnTimeVal = rs.getString("tn_time");
+					if (tnTimeVal == null) {
+						tnTimeVal = "";
+					}
+					// If tn is empty, hide command + SM PN in report output (printing only),
+					// except when redy=ct where we still want to show command + SM PN.
+					if (tn.trim().isEmpty() && !redyIsCt) {
+						customer.setCommand("");
+						customer.setPn("");
+					}
 					customer.setId(i + 1);
 					customer.setLc_name(lc_name);
 					customer.setTn(tn + " " + "[" + rs.getString("wer") + "]");
-					customer.setCommand(rs.getString("command"));
-					customer.setPn(rs.getString("pn") + " " + "[" + rs.getString("tn_time") + "]");
+					if (!tn.trim().isEmpty() || redyIsCt) {
+						customer.setCommand(commandVal);
+						customer.setPn(pnVal + " " + "[" + tnTimeVal + "]");
+					}
 
 					// Handle null for lc_stat
 					if (lc_stat == null) {
@@ -882,12 +948,34 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
                 if(tn == null) {
                 	tn = "";
                 }
+				String redy = rs.getString("redy");
+				boolean redyIsCt = redy != null && redy.trim().equalsIgnoreCase("ct");
+				String commandVal = rs.getString("command");
+				if (commandVal == null) {
+					commandVal = "";
+				}
+				String pnVal = rs.getString("pn");
+				if (pnVal == null) {
+					pnVal = "";
+				}
+				String tnTimeVal = rs.getString("tn_time");
+				if (tnTimeVal == null) {
+					tnTimeVal = "";
+				}
+				// If tn is empty, hide command + SM PN in report output (printing only),
+				// except when redy=ct where we still want to show command + SM PN.
+				if (tn.trim().isEmpty() && !redyIsCt) {
+					customer.setCommand("");
+					customer.setPn("");
+				}
 				//customer.setId(rs.getInt("id"));
                 customer.setId(i);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				customer.setCommand(rs.getString("command"));
-				customer.setPn(rs.getString("pn")+" " + "["+rs.getString("tn_time")+"]");
+				if (!tn.trim().isEmpty() || redyIsCt) {
+					customer.setCommand(commandVal);
+					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
+				}
 				
 				// Handle null for lc_stat
 				if(lc_stat == null) {
