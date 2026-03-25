@@ -124,9 +124,13 @@ public class ReportsService {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				String commandTrimmed = commandVal.trim();
+				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
+				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
+				boolean showDespiteEmptyTn = redyIsCt || commandIsNoNetwork || commandIsGnc;
 				// If tn is empty, hide command + SM PN in report output (printing only),
-				// except when redy=ct where we still want to show command + SM PN.
-				if (tn.trim().isEmpty() && !redyIsCt) {
+				// except when redy=ct or command is NO-NETWORK/GNC where we still want to show them.
+				if (tn.trim().isEmpty() && !showDespiteEmptyTn) {
 					customer.setCommand("");
 					customer.setPn("");
 				}
@@ -134,7 +138,7 @@ public class ReportsService {
                 customer.setId(i+1);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				if (!tn.trim().isEmpty() || redyIsCt) {
+				if (!tn.trim().isEmpty() || showDespiteEmptyTn) {
 					customer.setCommand(commandVal);
 					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
 				}
@@ -266,9 +270,13 @@ public class ReportsService {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				String commandTrimmed = commandVal.trim();
+				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
+				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
+				boolean showDespiteEmptyTn = redyIsCt || commandIsNoNetwork || commandIsGnc;
 				// If tn is empty, hide command + SM PN in report output (printing only),
-				// except when redy=ct where we still want to show command + SM PN.
-				if (tn.trim().isEmpty() && !redyIsCt) {
+				// except when redy=ct or command is NO-NETWORK/GNC where we still want to show them.
+				if (tn.trim().isEmpty() && !showDespiteEmptyTn) {
 					customer.setCommand("");
 					customer.setPn("");
 				}
@@ -276,7 +284,7 @@ public class ReportsService {
                 customer.setId(i+1);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				if (!tn.trim().isEmpty() || redyIsCt) {
+				if (!tn.trim().isEmpty() || showDespiteEmptyTn) {
 					customer.setCommand(commandVal);
 					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
 				}
@@ -466,16 +474,20 @@ public class ReportsService {
 					if (tnTimeVal == null) {
 						tnTimeVal = "";
 					}
+					String commandTrimmed = commandVal.trim();
+					boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
+					boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
+					boolean showDespiteEmptyTn = redyIsCt || commandIsNoNetwork || commandIsGnc;
 					// If tn is empty, hide command + SM PN in report output (printing only),
-					// except when redy=ct where we still want to show command + SM PN.
-					if (tn.trim().isEmpty() && !redyIsCt) {
+					// except when redy=ct or command is NO-NETWORK/GNC where we still want to show them.
+					if (tn.trim().isEmpty() && !showDespiteEmptyTn) {
 						customer.setCommand("");
 						customer.setPn("");
 					}
 					customer.setId(i + 1);
 					customer.setLc_name(lc_name);
 					customer.setTn(tn + " " + "[" + rs.getString("wer") + "]");
-					if (!tn.trim().isEmpty() || redyIsCt) {
+					if (!tn.trim().isEmpty() || showDespiteEmptyTn) {
 						customer.setCommand(commandVal);
 						customer.setPn(pnVal + " " + "[" + tnTimeVal + "]");
 					}
@@ -962,9 +974,13 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				String commandTrimmed = commandVal.trim();
+				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
+				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
+				boolean showDespiteEmptyTn = redyIsCt || commandIsNoNetwork || commandIsGnc;
 				// If tn is empty, hide command + SM PN in report output (printing only),
-				// except when redy=ct where we still want to show command + SM PN.
-				if (tn.trim().isEmpty() && !redyIsCt) {
+				// except when redy=ct or command is NO-NETWORK/GNC where we still want to show them.
+				if (tn.trim().isEmpty() && !showDespiteEmptyTn) {
 					customer.setCommand("");
 					customer.setPn("");
 				}
@@ -972,7 +988,7 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
                 customer.setId(i);
 				customer.setLc_name(lc_name);
 				customer.setTn(tn+ " " + "["+rs.getString("wer")+"]");
-				if (!tn.trim().isEmpty() || redyIsCt) {
+				if (!tn.trim().isEmpty() || showDespiteEmptyTn) {
 					customer.setCommand(commandVal);
 					customer.setPn(pnVal+" " + "["+tnTimeVal+"]");
 				}
