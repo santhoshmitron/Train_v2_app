@@ -33,7 +33,7 @@ public class SMFailsafeScheduler {
      * 
      * Uses distributed lock to ensure only one instance executes this in a load-balanced setup
      */
-    @Scheduled(fixedDelay = 120000, initialDelay = 60000)
+    @Scheduled(fixedDelay = 30000, initialDelay = 60000)
     public void checkStaleSMs() {
         // Try to acquire distributed lock - only one instance will succeed
         boolean lockAcquired = redisUserRepository.tryAcquireLock(LOCK_NAME, LOCK_TIMEOUT_SECONDS);

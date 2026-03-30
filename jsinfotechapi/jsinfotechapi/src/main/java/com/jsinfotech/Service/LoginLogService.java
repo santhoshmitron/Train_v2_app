@@ -4,6 +4,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Date;
 import java.util.List;
+import java.time.ZonedDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -19,15 +22,23 @@ public class LoginLogService {
 	JdbcTemplate jdbcTemplate;
 
 	public void createLoginLog(String userId, String phoneNumber) {
+		// Store login/logout times as IST wall-clock time (not NOW() which uses DB/server timezone).
+		String istNow = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").format(
+			ZonedDateTime.now(ZoneId.of("Asia/Kolkata"))
+		);
 		jdbcTemplate.update(
-				"INSERT INTO login_logs (user_id, phone_number, login_time, is_logged_out) VALUES (?, ?, NOW(), ?)",
-				userId, phoneNumber, false);
+				"INSERT INTO login_logs (user_id, phone_number, login_time, is_logged_out) VALUES (?, ?, ?, ?)",
+				userId, phoneNumber, istNow, false);
 	}
 
 	public void updateLogout(String userId, String phoneNumber) {
+		// Store login/logout times as IST wall-clock time (not NOW() which uses DB/server timezone).
+		String istNow = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").format(
+			ZonedDateTime.now(ZoneId.of("Asia/Kolkata"))
+		);
 		jdbcTemplate.update(
-				"UPDATE login_logs SET logout_time = NOW(), is_logged_out = ? WHERE user_id = ? AND phone_number = ? AND is_logged_out = ?",
-				true, userId, phoneNumber, false);
+				"UPDATE login_logs SET logout_time = ?, is_logged_out = ? WHERE user_id = ? AND phone_number = ? AND is_logged_out = ?",
+				istNow, true, userId, phoneNumber, false);
 	}
 
 	public LoginLog getLatestLoginLog(String userId, String phoneNumber) {

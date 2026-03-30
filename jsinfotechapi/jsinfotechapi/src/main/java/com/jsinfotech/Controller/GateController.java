@@ -26,6 +26,7 @@ import com.jsinfotech.Domain.ManageGates;
 import com.jsinfotech.Domain.Response;
 import com.jsinfotech.Service.ManageGatesService;
 import com.jsinfotech.Service.ReportsService;
+import com.jsinfotech.Service.SMFailsafeService;
 
 @RestController
 @RequestMapping("/gate")
@@ -38,6 +39,9 @@ public class GateController {
 	
 	@Autowired
 	ReportsService reportsService;
+	
+	@Autowired
+	SMFailsafeService smFailsafeService;
 	
 	@Autowired
     private KafkaTemplate<String, Gate> kafkaTemplate;
@@ -62,6 +66,31 @@ public class GateController {
 	public List<API>addStatus(@RequestParam(name = "field1") String field1,@RequestParam(name = "field2") String field2,@RequestParam(name = "field3") String field3,@RequestParam(name = "field4") String field4,@RequestParam(name = "field5", required = false) String field5,@RequestParam(name = "field6", required = false) String field6,HttpServletRequest request)
 	{
 		String gateId = field1;
+		
+		// Refresh failsafe "last data received" timestamps immediately on every sensor hit.
+		// This avoids waiting for the scheduled job to notice recovery.
+		try {
+			if (gateId != null && !gateId.trim().isEmpty()) {
+				Service.recordSMDataForFailsafe(gateId.trim());
+				
+				// Resolve SM for this gateId from managegates, then mark SM as active.
+				List<Map<String, Object>> smRows = jdbcTemplate.queryForList(
+					"select SM from managegates where LTSW_ID=? OR BOOM1_ID=? OR BOOM2_ID=? OR handle=? limit 1",
+					gateId, gateId, gateId, gateId
+				);
+				if (smRows != null && !smRows.isEmpty()) {
+					Object smObj = smRows.get(0).get("SM");
+					if (smObj != null) {
+						String sm = String.valueOf(smObj).trim();
+						if (!sm.isEmpty()) {
+							smFailsafeService.recordSMDataReceived(sm);
+						}
+					}
+				}
+			}
+		} catch (Exception e) {
+			logger.warn("Failed to refresh failsafe timestamps for gateId: {}", gateId, e);
+		}
 		
 		// Format timestamp
 		SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss");
@@ -224,6 +253,13 @@ public class GateController {
 			boolean isSM = userid.endsWith("_SM");
 			logger.info("Checking failsafe status for {}: {}", isSM ? "SM" : "GM", userid);
 			
+			// On-demand refresh so this API reflects recovery immediately (no scheduler delay).
+			try {
+				smFailsafeService.checkAndActivateFailsafe();
+			} catch (Exception e) {
+				logger.warn("Failsafe refresh failed (continuing with cached state): {}", e.getMessage());
+			}
+			
 			boolean failsafe = Service.getSMFailsafeStatus(userid);
 			java.util.List<String> failsafeGateNames = Service.getFailsafeGateNamesForSM(userid);
 			
@@ -280,8 +316,8 @@ public class GateController {
 			com.jsinfotech.Domain.FailsafeResponse failsafeResponse = reportsService.getFailsafeResponseData(userid);
 			if (failsafeResponse != null) {
 				response.setReportid(failsafeResponse.getReportid());
-				// Always set play_command to empty list (not populated from failsafeResponse)
-				response.setPlay_command(new java.util.ArrayList<>());
+				// Populate play_command from failsafeResponse (deduped, gate-formatted messages)
+				response.setPlay_command(failsafeResponse.getPlay_command() != null ? failsafeResponse.getPlay_command() : new java.util.ArrayList<>());
 			} else {
 				response.setReportid(new java.util.ArrayList<>());
 				response.setPlay_command(new java.util.ArrayList<>());

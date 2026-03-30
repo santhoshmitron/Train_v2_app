@@ -138,6 +138,18 @@ public class AcknowledgementService {
 	
 		String id = checkstatus(userId,gateId);
 		   if(id!=null) {
+			   // Failsafe rule: if the gate is in active NO-NETWORK (unacknowledged) failsafe for this GM,
+			   // do not show/generate expected GM PN.
+			   if (isUnacknowledgedNoNetworkFailsafeActive(userId, gateId)) {
+				   try {
+					   userRepository.deleteReportIdGmPN(id);
+				   } catch (Exception e) {
+					   // ignore
+				   }
+				   allReport.setPn(null);
+				   allReport.setId(Integer.parseInt(id));
+				   return allReport;
+			   }
 			 // For GM flow: return expected GM PN (for lc_pin), NOT the SM PN (reports.pn)
 			 String st = userRepository.findReportIdGmPN(id);
 			 if (st == null || st.trim().isEmpty()) {
@@ -226,7 +238,7 @@ public class AcknowledgementService {
 	public boolean ackCommand(int id) {
 		ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
 		String format3 = now.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH));
-		int i = jdbcTemplate1.update("update reports set ackn = ? where id = ? and ackn = ''", new Object[] { format3, id });
+		int i = jdbcTemplate1.update("update reports set ackn = ? where id = ? and (ackn IS NULL OR ackn = '')", new Object[] { format3, id });
 		
 
 		Reports managegates = jdbcTemplate1.queryForObject("select * from reports where id=?", new Object[] { id },
@@ -378,6 +390,26 @@ public class AcknowledgementService {
 		return String.valueOf(pn).indexOf('0') < 0;
 	}
 
+	/**
+	 * Returns true if an unacknowledged NO-NETWORK report exists for the given gate (lc_name)
+	 * and GM (gm). When active, expected GM PN must not be generated.
+	 */
+	private boolean isUnacknowledgedNoNetworkFailsafeActive(String gm, String lcName) {
+		if (gm == null || gm.trim().isEmpty()) return false;
+		if (lcName == null || lcName.trim().isEmpty()) return false;
+		try {
+			Integer count = jdbcTemplate1.queryForObject(
+				"SELECT COUNT(*) FROM reports WHERE command='NO-NETWORK' AND lc_name=? AND gm=? AND (ackn IS NULL OR ackn = '')",
+				Integer.class,
+				lcName.trim(),
+				gm.trim()
+			);
+			return count != null && count > 0;
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
 	public boolean updateQ(int id,String state) {
 		Reports managegates = jdbcTemplate1.queryForObject("select * from reports where id=?", new Object[] { id },
 				new BeanPropertyRowMapper<Reports>(Reports.class));
@@ -385,37 +417,40 @@ public class AcknowledgementService {
 		// This is separate from SM PN stored in reports.pn.
 		try {
 			if ((flag.get(managegates.getLc()) != null) && (flag.get(managegates.getLc()).equals("closed")) && (state.equals("ACK"))) {
-				String reportId = String.valueOf(id);
-				String existing = userRepository.findReportIdGmPN(reportId);
-				if (existing == null || existing.trim().isEmpty()) {
-					String smPn = managegates.getPn(); // SM PN stored in reports.pn
-					String gateKey = managegates.getLc();
-					String gateName = managegates.getLc_name();
+				// If failsafe is active (unacknowledged NO-NETWORK for this gate+GM), do not generate expected GM PN.
+				if (!isUnacknowledgedNoNetworkFailsafeActive(managegates.getGm(), managegates.getLc_name())) {
+					String reportId = String.valueOf(id);
+					String existing = userRepository.findReportIdGmPN(reportId);
+					if (existing == null || existing.trim().isEmpty()) {
+						String smPn = managegates.getPn(); // SM PN stored in reports.pn
+						String gateKey = managegates.getLc();
+						String gateName = managegates.getLc_name();
 
-					String gmPn = null;
-					for (int attempt = 0; attempt < 10; attempt++) {
-						String candidate = pnGenerationService.generateUniquePNForGate(gateKey);
-						if (smPn == null || smPn.trim().isEmpty() || !candidate.equals(smPn.trim())) {
-							gmPn = candidate;
-							break;
+						String gmPn = null;
+						for (int attempt = 0; attempt < 10; attempt++) {
+							String candidate = pnGenerationService.generateUniquePNForGate(gateKey);
+							if (smPn == null || smPn.trim().isEmpty() || !candidate.equals(smPn.trim())) {
+								gmPn = candidate;
+								break;
+							}
 						}
-					}
-					if (gmPn == null) {
-						// Extremely unlikely fallback
-						gmPn = pnGenerationService.generateUniquePNForGate(gateKey);
-					}
+						if (gmPn == null) {
+							// Extremely unlikely fallback
+							gmPn = pnGenerationService.generateUniquePNForGate(gateKey);
+						}
 
-					userRepository.saveReportIdGmPN(reportId, gmPn);
-					try {
-						// Reserve in Redis uniqueness (per gate) so it won't be reused within 24h
-						if (gateKey != null && !gateKey.trim().isEmpty()) {
-							userRepository.markPNAsUsed(gateKey.trim(), gmPn);
+						userRepository.saveReportIdGmPN(reportId, gmPn);
+						try {
+							// Reserve in Redis uniqueness (per gate) so it won't be reused within 24h
+							if (gateKey != null && !gateKey.trim().isEmpty()) {
+								userRepository.markPNAsUsed(gateKey.trim(), gmPn);
+							}
+							if (gateName != null && !gateName.trim().isEmpty()) {
+								userRepository.markPNAsUsed(gateName.trim(), gmPn);
+							}
+						} catch (Exception e) {
+							// Not fatal; uniqueness also enforced by DB scan, but Redis helps.
 						}
-						if (gateName != null && !gateName.trim().isEmpty()) {
-							userRepository.markPNAsUsed(gateName.trim(), gmPn);
-						}
-					} catch (Exception e) {
-						// Not fatal; uniqueness also enforced by DB scan, but Redis helps.
 					}
 				}
 			}

@@ -39,6 +39,34 @@ public class RedisUserRepository {
         this.hashOperations = this.redisTemplate.opsForHash();
     }
 
+    private static String boomPlayKey(String username, String gateNum) {
+        String u = (username != null) ? username.trim() : "";
+        String g = (gateNum != null) ? gateNum.trim() : "";
+        return "boom:play:last:" + u + ":" + g;
+    }
+
+    public String getLastBoomPlayCommand(String username, String gateNum) {
+        try {
+            Object v = this.redisTemplate.opsForValue().get(boomPlayKey(username, gateNum));
+            return v != null ? v.toString() : null;
+        } catch (Exception e) {
+            logger.warn("Failed to read last boom play command (user: {}, gate: {})", username, gateNum, e);
+            return null;
+        }
+    }
+
+    public void setLastBoomPlayCommand(String username, String gateNum, String command, long ttlSeconds) {
+        try {
+            if (command == null || command.trim().isEmpty()) {
+                return;
+            }
+            long ttl = ttlSeconds > 0 ? ttlSeconds : 10;
+            this.redisTemplate.opsForValue().set(boomPlayKey(username, gateNum), command, ttl, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            logger.warn("Failed to store last boom play command (user: {}, gate: {})", username, gateNum, e);
+        }
+    }
+
     public void save(String gate,API user){
         hashOperations.put("1", gate, user);
         logger.info("Hit" +user.getLc_name() );
@@ -179,6 +207,20 @@ public class RedisUserRepository {
 
        	return t1.get(0);
        	}
+
+      public List<String> popAllAudio1(String gate){
+          try {
+              List<String> items = (List<String>) this.redisTemplate.opsForList().range(gate+"1", 0, -1);
+              if (items == null || items.isEmpty()) {
+                  return new java.util.ArrayList<>();
+              }
+              this.redisTemplate.delete(gate+"1");
+              return items;
+          } catch (Exception e) {
+              logger.warn("Failed to pop all audio1 for key: {}", gate+"1", e);
+              return new java.util.ArrayList<>();
+          }
+      }
     public String poppAudio(String gate){
 
         String t = (String)this.redisTemplate.opsForList().leftPop(gate);
@@ -189,6 +231,20 @@ public class RedisUserRepository {
 
     	return t;
     	}
+
+    public List<String> popAllAudio(String gate){
+        try {
+            List<String> items = (List<String>) this.redisTemplate.opsForList().range(gate, 0, -1);
+            if (items == null || items.isEmpty()) {
+                return new java.util.ArrayList<>();
+            }
+            this.redisTemplate.delete(gate);
+            return items;
+        } catch (Exception e) {
+            logger.warn("Failed to pop all audio for key: {}", gate, e);
+            return new java.util.ArrayList<>();
+        }
+    }
     
     public void poppAudio2(String gate){
 

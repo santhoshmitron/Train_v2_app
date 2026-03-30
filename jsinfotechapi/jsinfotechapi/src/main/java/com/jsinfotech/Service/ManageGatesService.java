@@ -230,6 +230,31 @@ public class ManageGatesService {
 			}
 		});
 		
+		// Use the same failsafe source as /gate/api/failsafe to avoid status mismatch.
+		java.util.Set<String> failsafeGateSet = new java.util.HashSet<>();
+		try {
+			java.util.List<String> failsafeGateNames;
+			if (rolename != null && rolename.indexOf('s') != -1) {
+				failsafeGateNames = smFailsafeService.getFailsafeGateNamesForSM(username);
+			} else if (rolename != null && rolename.indexOf('g') != -1) {
+				failsafeGateNames = smFailsafeService.getFailsafeGateNamesForGM(username);
+			} else {
+				failsafeGateNames = new java.util.ArrayList<>();
+			}
+			if (failsafeGateNames != null) {
+				for (String gateName : failsafeGateNames) {
+					if (gateName != null) {
+						String normalized = gateName.replaceAll("[^0-9A-Za-z-]", "").trim();
+						if (!normalized.isEmpty()) {
+							failsafeGateSet.add(normalized);
+						}
+					}
+				}
+			}
+		} catch (Exception e) {
+			logger.warn("Error preloading failsafe gate names for user: {} role: {}", username, rolename, e);
+		}
+
 		for(ManageGates m:l) {
 			
 			m.setId(k);
@@ -251,21 +276,11 @@ public class ManageGatesService {
 				}
 			}
 			
-			// Populate failsafe status (play_command field removed)
-			try {
-				String boom1Id = m.getBoom1Id();
-				String gateNum = m.getGateNum();
-				
-				// Check if gate has unacknowledged NO-NETWORK reports
-				String failsafeCheckQuery = "SELECT COUNT(*) as cnt FROM reports WHERE command='NO-NETWORK' AND (lc_name = ? OR lc = ? OR lc_name = ?) AND (ackn IS NULL OR ackn = '')";
-				Integer failsafeCount = jdbcTemplate1.queryForObject(failsafeCheckQuery, new Object[] {gateNum, boom1Id, gateNum}, Integer.class);
-				
-				boolean isFailsafe = (failsafeCount != null && failsafeCount > 0);
-				m.setIs_failsafe(isFailsafe);
-			} catch (Exception e) {
-				logger.warn("Error querying failsafe status for gate: {} (BOOM1_ID: {}): {}", m.getGateNum(), m.getBoom1Id(), e.getMessage());
-				m.setIs_failsafe(false);
-			}
+			// Populate failsafe status from the same source used by /gate/api/failsafe.
+			String gateNum = m.getGateNum() != null ? m.getGateNum().trim() : "";
+			String boom1Id = m.getBoom1Id() != null ? m.getBoom1Id().trim() : "";
+			boolean isFailsafe = failsafeGateSet.contains(gateNum) || failsafeGateSet.contains(boom1Id);
+			m.setIs_failsafe(isFailsafe);
 		}
 		if(rolename.indexOf('s')!=-1) {
 			  for(ManageGates m: l) {
@@ -291,12 +306,18 @@ public class ManageGatesService {
 			  // Only set reportId and pn when status is "closed"
 			  String currentStatus = m.getStatus();
 			  if(currentStatus != null && currentStatus.equalsIgnoreCase("closed")) {
-				  // Prefer the oldest Closed report for this gate that has tn but is missing lc_pin,
-				  // so GM is prompted to send PN for older reports first. When none remain, use latest Closed.
-				  String id = findOldestClosedReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
-				  if (id == null) {
-					  id = findLatestClosedReportIdForGate(username, m.getBoom1Id(), m.getGateNum());
-				  }
+					  // Failsafe rule: while an unacknowledged NO-NETWORK exists for this gate,
+					  // do not generate/show GM expected PN (gm_pn) during the Closed phase.
+					  if (Boolean.TRUE.equals(m.getIs_failsafe())) {
+						  m.setReportId(null);
+						  m.setPn(null);
+						  m.setBs1Gc(null);
+						  continue;
+					  }
+
+				  // Pick the latest ACKed Closed/Cancel report that still needs lc_pin.
+				  // If latest is unacknowledged, automatically fall back to older ACKed rows.
+				  String id = findLatestAckedReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
 				  
 				   if(id!=null) {
 					 // Set reportId field (previously misused as bs1Go)
@@ -336,14 +357,7 @@ public class ManageGatesService {
 						 continue;
 					 }
 					 
-					 // If report is not acknowledged yet (ackn is empty), do not show gm_pn.
-					 // gm_pn should only be shown after user acknowledges the report via ACK/sendpn.
-					 boolean hasAckn = reportHasNonEmptyAckn(id);
-					 if (!hasAckn) {
-						 m.setPn(null);
-						 m.setBs1Gc(null);
-						 continue;
-					 }
+					 // Ack filter is already enforced at report selection stage.
 					 
 					 // GM expected PN (for lc_pin). This must be different from SM PN stored in reports.pn.
 					 // After ACK, we need to show gm_pn so user can send it via ACK/sendpn.
@@ -417,21 +431,33 @@ public class ManageGatesService {
 					   // No report found, set to null
 					   m.setReportId(null);
 					   m.setPn(null);
+					   // Keep GM boom_lock_play_commad behavior aligned with SM:
+					   // even when reportId is null, allow command computation from latest gate status/report signal.
+					   try {
+						   String boom1Id = m.getBoom1Id();
+						   String gateNum = m.getGateNum();
+						   String mainStatus = m.getStatus();
+						   String playCommand = reportsService.getPlayCommandForGate(username, rolename, gateNum, boom1Id, mainStatus, null);
+						   m.setBoom_lock_play_commad(playCommand);
+					   } catch (Exception e) {
+						   logger.warn("Error getting play command for gate: {} (BOOM1_ID: {}) with null reportId: {}",
+							   m.getGateNum(), m.getBoom1Id(), e.getMessage());
+						   m.setBoom_lock_play_commad(null);
+					   }
 				   }
 			  } else {
 				  // Status is "open" or not "closed".
 				  // For Cancel reports, GM must still be able to send PN even when the gate is open.
-				  String cancelId = findOldestCancelReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
+				  String cancelId = findLatestAckedCancelReportIdMissingLcPinForGate(username, m.getBoom1Id(), m.getGateNum());
 				  if (cancelId != null) {
 					  m.setReportId(cancelId);
 					  m.setBs1Go(cancelId); // backward compatibility
 					  
 					  // Reuse the same gm_pn exposure rules as Closed flow:
-					  // require tn present, lc_pin empty, ackn present.
+					  // require tn present and lc_pin empty. Ack filter is done in selector query.
 					  boolean hasTn = reportHasNonEmptyTn(cancelId);
 					  boolean hasLcPin = reportHasNonEmptyLcPin(cancelId);
-					  boolean hasAckn = reportHasNonEmptyAckn(cancelId);
-					  if (!hasTn || hasLcPin || !hasAckn) {
+					  if (!hasTn || hasLcPin) {
 						  m.setPn(null);
 						  m.setBs1Gc(null);
 					  } else {
@@ -492,10 +518,10 @@ public class ManageGatesService {
 	}
 
 	/**
-	 * Return the oldest reports.id for this GM + gate that is Closed, has train (tn), and is missing lc_pin.
-	 * Used so getstatus shows the next report that needs PN until all such reports have lc_pin; then we fall back to latest.
+	 * Return the latest reports.id for this GM + gate that is Closed/Cancel, has train (tn),
+	 * is ACKed, and is missing lc_pin. This ensures GM PN is shown for actionable ACKed reports only.
 	 */
-	private String findOldestClosedReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
+	private String findLatestAckedReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
 		try {
 			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
 			String gn = (gateNum != null) ? gateNum.trim() : "";
@@ -507,10 +533,11 @@ public class ManageGatesService {
 				"WHERE gm = ? " +
 				"AND (UPPER(lc_status) = 'CLOSED' OR UPPER(command) = 'CANCEL') " +
 				"AND (tn IS NOT NULL AND tn != '') " +
+				"AND (ackn IS NOT NULL AND ackn != '') " +
 				"AND (lc_pin IS NULL OR lc_pin = '') " +
 				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
 				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
-				"ORDER BY id ASC " +
+				"ORDER BY id DESC " +
 				"LIMIT 1";
 			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gmUsername, b1, gn, b1, gn);
 			if (rows == null || rows.isEmpty()) {
@@ -519,16 +546,16 @@ public class ManageGatesService {
 			Object idObj = rows.get(0).get("id");
 			return idObj != null ? idObj.toString() : null;
 		} catch (Exception e) {
-			logger.warn("Error finding oldest Closed reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
+			logger.warn("Error finding latest ACKed reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
 			return null;
 		}
 	}
 
 	/**
-	 * Return the oldest reports.id for this GM + gate that is a Cancel report, has train (tn),
+	 * Return the latest ACKed Cancel report id for this GM + gate that has train (tn)
 	 * and is missing lc_pin. This must be shown even when main status is Open.
 	 */
-	private String findOldestCancelReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
+	private String findLatestAckedCancelReportIdMissingLcPinForGate(String gmUsername, String boom1Id, String gateNum) {
 		try {
 			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
 			String gn = (gateNum != null) ? gateNum.trim() : "";
@@ -540,10 +567,11 @@ public class ManageGatesService {
 				"WHERE gm = ? " +
 				"AND UPPER(command) = 'CANCEL' " +
 				"AND (tn IS NOT NULL AND tn != '') " +
+				"AND (ackn IS NOT NULL AND ackn != '') " +
 				"AND (lc_pin IS NULL OR lc_pin = '') " +
 				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
 				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
-				"ORDER BY id ASC " +
+				"ORDER BY id DESC " +
 				"LIMIT 1";
 			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(sql, gmUsername, b1, gn, b1, gn);
 			if (rows == null || rows.isEmpty()) {
@@ -552,7 +580,7 @@ public class ManageGatesService {
 			Object idObj = rows.get(0).get("id");
 			return idObj != null ? idObj.toString() : null;
 		} catch (Exception e) {
-			logger.warn("Error finding oldest Cancel reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
+			logger.warn("Error finding latest ACKed Cancel reportId missing lc_pin for GM: {}, BOOM1_ID: {}, Gate_Num: {}", gmUsername, boom1Id, gateNum, e);
 			return null;
 		}
 	}
@@ -1309,8 +1337,51 @@ public class ManageGatesService {
 					jdbcTemplate1.update("update reports set lc_open_time=? where lc_pin != ? and ackn != ? and added_on > ? and gm=? and lc_open_time=?",new Object[] 
 							{time1,"","",date1,obj3.getGm(),""});
 
-					jdbcTemplate1.update("insert into reports (lc_name, lc_status, lc_lock_time, lc, sm) values(?,?, ?,?,?)",
-							obj3.getLc_name(),"Open",time1,gate,obj3.getSm());
+					// Final rule: while gate is in failsafe, do NOT save non-ct Open/Close reports (this legacy insert has no redy column).
+					boolean blockNonCtOpenInFailsafe = false;
+					try {
+						// 1) managegates.is_failsafe truthy
+						String isFailsafeRaw = jdbcTemplate1.queryForObject(
+							"SELECT LOWER(COALESCE(CAST(is_failsafe AS CHAR), 'false')) FROM managegates WHERE Gate_Num=? OR BOOM1_ID=? OR handle=? LIMIT 1",
+							new Object[] { obj3.getLc_name(), gate, gate },
+							String.class
+						);
+						String v = isFailsafeRaw == null ? "" : isFailsafeRaw.trim();
+						blockNonCtOpenInFailsafe = !(v.isEmpty() || "false".equals(v) || "0".equals(v) || "null".equals(v));
+					} catch (Exception ignore) {
+						blockNonCtOpenInFailsafe = false;
+					}
+					if (!blockNonCtOpenInFailsafe) {
+						// 2) live failsafe tracker (same source as /gate/api/failsafe)
+						try {
+							java.util.List<String> smFailsafeGates = smFailsafeService.getFailsafeGateNamesForSM(obj3.getSm());
+							java.util.List<String> gmFailsafeGates = smFailsafeService.getFailsafeGateNamesForGM(obj3.getGm());
+							boolean smActive = smFailsafeGates != null && (smFailsafeGates.contains(obj3.getLc_name()) || smFailsafeGates.contains(gate));
+							boolean gmActive = gmFailsafeGates != null && (gmFailsafeGates.contains(obj3.getLc_name()) || gmFailsafeGates.contains(gate));
+							if (smActive || gmActive) {
+								blockNonCtOpenInFailsafe = true;
+							}
+						} catch (Exception ignore) {
+							// keep existing value
+						}
+					}
+					if (!blockNonCtOpenInFailsafe) {
+						// 2) unacknowledged NO-NETWORK exists for this gate (operational failsafe)
+						try {
+							Integer cnt = jdbcTemplate1.queryForObject(
+								"SELECT COUNT(*) FROM reports WHERE command='NO-NETWORK' AND (ackn IS NULL OR ackn='') AND (lc_name=? OR lc=? OR lc_name=? OR lc=?)",
+								new Object[] { obj3.getLc_name(), gate, gate, obj3.getLc_name() },
+								Integer.class
+							);
+							blockNonCtOpenInFailsafe = (cnt != null && cnt.intValue() > 0);
+						} catch (Exception ignore) {
+							// keep existing value
+						}
+					}
+					if (!blockNonCtOpenInFailsafe) {
+						jdbcTemplate1.update("insert into reports (lc_name, lc_status, lc_lock_time, lc, sm) values(?,?, ?,?,?)",
+								obj3.getLc_name(),"Open",time1,gate,obj3.getSm());
+					}
 					break;
 
 

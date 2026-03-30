@@ -41,6 +41,9 @@ public class ProcessServiceImpl{
 	@Autowired
 	BoomLockHealthService boomLockHealthService;
 
+	@Autowired
+	SMFailsafeService smFailsafeService;
+
 	private static final class CanonicalGate {
 		private final String boom1Id;
 		private final String gateNum;
@@ -862,6 +865,32 @@ public class ProcessServiceImpl{
 				simpleDateFormat1.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 				String time = simpleDateFormat1.format(new Date());
 
+				// Failsafe rule:
+				// If an unacknowledged NO-NETWORK report exists for this gate+GM,
+				// do not update closed reports (lc_status) and do not generate PN.
+				boolean gateInFailsafeForThisGM = false;
+				if (gateNumForUpdate != null && !gateNumForUpdate.trim().isEmpty()
+					&& gmForUpdate != null && !gmForUpdate.trim().isEmpty()) {
+					try {
+						Integer failsafeCount = jdbcTemplate1.queryForObject(
+							"SELECT COUNT(*) FROM reports WHERE command='NO-NETWORK' AND lc_name=? AND gm=? AND (ackn IS NULL OR ackn = '')",
+							Integer.class,
+							gateNumForUpdate,
+							gmForUpdate
+						);
+						gateInFailsafeForThisGM = (failsafeCount != null && failsafeCount > 0);
+					} catch (Exception e) {
+						logger.warn("Failsafe check failed (gate: {}, gm: {}), continuing normal closed flow: {}",
+							gateNumForUpdate, gmForUpdate, e.getMessage());
+					}
+				}
+				
+				if (gateInFailsafeForThisGM) {
+					logger.info("Gate sensors are closed but failsafe is active for gate '{}' and GM '{}'. Skipping lc_status update and PN generation.",
+						gateNumForUpdate, gmForUpdate);
+					return;
+				}
+
 				// Always check for existing "Close" report with train number when sensors are closed
 				// This should happen regardless of previous status - we need to update train rows even if status was already "Closed"
 				boolean shouldCreateClosedReport = (previousStatus == null || !previousStatus.equalsIgnoreCase("Closed"));
@@ -974,11 +1003,20 @@ public class ProcessServiceImpl{
 									SimpleDateFormat sdfNow = new SimpleDateFormat(patternNow);
 									sdfNow.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 									String currentDateTime = sdfNow.format(new Date());
+									// Final rule: while gate is in failsafe, do NOT save non-ct Open/Close reports.
+									// These Close rows are non-ct (redy = '' or 's').
+									boolean blockNonCtCloseInFailsafe = isGateInFailsafeForNonCtReports(gateNumForUpdate, boom1IdForUpdate);
+									if (blockNonCtCloseInFailsafe) {
+										logger.info("Gate is in failsafe (managegates.is_failsafe=true). Skipping non-ct Close report insert for gate: {} (BOOM1_ID: {}, lc_name: {})",
+											gate, boom1IdForUpdate, gateNumForUpdate);
+										insertResult = 0;
+									} else {
 									insertResult = jdbcTemplate1.update(
 										"insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 										"","",time,"Close","",smForUpdate,gmForUpdate,boom1IdForUpdate,gateNumForUpdate,
 										currentDateTime,"Closed",time,"","","","",""
 									);
+									}
 									if (insertResult > 0) {
 										reportExists = true;
 										logger.info("SUCCESS: Created Closed report (status already Closed) for gate: {} (BOOM1_ID: {}, lc_name: {})",
@@ -1008,9 +1046,17 @@ public class ProcessServiceImpl{
 								// Format current date/time as string to ensure IST timezone (same as NO-NETWORK)
 								simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 								String currentDateTime = simpleDateFormat.format(new Date());
-								insertResult = jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-										"","",time,"Close","",smForUpdate,gmForUpdate,boom1IdForUpdate,gateNumForUpdate,
-										currentDateTime,"Closed",time,"","","","","s");
+								// Final rule: while gate is in failsafe, do NOT save non-ct Open/Close reports.
+								boolean blockNonCtCloseInFailsafe = isGateInFailsafeForNonCtReports(gateNumForUpdate, boom1IdForUpdate);
+								if (blockNonCtCloseInFailsafe) {
+									logger.info("Gate is in failsafe (managegates.is_failsafe=true). Skipping non-ct Close report insert for gate: {} (BOOM1_ID: {}, lc_name: {})",
+										gate, boom1IdForUpdate, gateNumForUpdate);
+									insertResult = 0;
+								} else {
+									insertResult = jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+											"","",time,"Close","",smForUpdate,gmForUpdate,boom1IdForUpdate,gateNumForUpdate,
+											currentDateTime,"Closed",time,"","","","","s");
+								}
 								if (insertResult > 0) {
 									reportExists = true;
 									logger.info("SUCCESS: Created new Closed report for gate: {} (BOOM1_ID: {}, lc_name: {}). Insert result: {}", 
@@ -1246,6 +1292,67 @@ public class ProcessServiceImpl{
 		}
 		return obj;
 	}
+
+	private boolean isGateInFailsafeForNonCtReports(String gateNum, String boom1Id) {
+		// Failsafe definition for blocking non-ct Open/Close saves:
+		// 1) managegates.is_failsafe is truthy OR
+		// 2) gate appears in live failsafe tracker (same source as /gate/api/failsafe)
+		// 3) an unacknowledged NO-NETWORK report exists for this gate
+		try {
+			String gn = gateNum != null ? gateNum.trim() : "";
+			String b1 = boom1Id != null ? boom1Id.trim() : "";
+
+			// 1) managegates.is_failsafe truthy
+			try {
+				String raw = jdbcTemplate1.queryForObject(
+					"SELECT LOWER(COALESCE(CAST(is_failsafe AS CHAR), 'false')) FROM managegates WHERE Gate_Num=? OR BOOM1_ID=? OR handle=? LIMIT 1",
+					new Object[] { gn, b1, b1 },
+					String.class
+				);
+				String v = raw == null ? "" : raw.trim();
+				boolean mgFailsafe = !(v.isEmpty() || "false".equals(v) || "0".equals(v) || "null".equals(v));
+				if (mgFailsafe) return true;
+			} catch (Exception ignore) {}
+
+			// 2) live failsafe tracker (Redis-backed) used by /gate/api/failsafe and getstatus
+			try {
+				List<Map<String, Object>> gateRows = jdbcTemplate1.queryForList(
+					"SELECT SM, GM, Gate_Num, BOOM1_ID FROM managegates WHERE Gate_Num=? OR BOOM1_ID=? OR handle=? LIMIT 1",
+					gn, b1, b1
+				);
+				if (gateRows != null && !gateRows.isEmpty()) {
+					Map<String, Object> row = gateRows.get(0);
+					String sm = row.get("SM") != null ? row.get("SM").toString().trim() : "";
+					String gm = row.get("GM") != null ? row.get("GM").toString().trim() : "";
+					String gateNumResolved = row.get("Gate_Num") != null ? row.get("Gate_Num").toString().trim() : gn;
+					String boom1Resolved = row.get("BOOM1_ID") != null ? row.get("BOOM1_ID").toString().trim() : b1;
+
+					if (!sm.isEmpty()) {
+						List<String> smFailsafeGates = smFailsafeService.getFailsafeGateNamesForSM(sm);
+						if (smFailsafeGates != null && (smFailsafeGates.contains(gateNumResolved) || smFailsafeGates.contains(boom1Resolved))) {
+							return true;
+						}
+					}
+					if (!gm.isEmpty()) {
+						List<String> gmFailsafeGates = smFailsafeService.getFailsafeGateNamesForGM(gm);
+						if (gmFailsafeGates != null && (gmFailsafeGates.contains(gateNumResolved) || gmFailsafeGates.contains(boom1Resolved))) {
+							return true;
+						}
+					}
+				}
+			} catch (Exception ignore) {}
+
+			// 3) unacknowledged NO-NETWORK exists for gate (by lc_name or lc)
+			Integer cnt = jdbcTemplate1.queryForObject(
+				"SELECT COUNT(*) FROM reports WHERE command='NO-NETWORK' AND (ackn IS NULL OR ackn='') AND (lc_name=? OR lc=? OR lc_name=? OR lc=?)",
+				new Object[] { gn, b1, b1, gn },
+				Integer.class
+			);
+			return cnt != null && cnt.intValue() > 0;
+		} catch (Exception e) {
+			return false;
+		}
+	}
 	
 	private void insertreports( API obj,String format3,String date ) {
 			// Use BOOM1_ID (obj.getGate()) for lc field to match closed report format
@@ -1258,9 +1365,18 @@ public class ProcessServiceImpl{
 				SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
 				simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 				String currentDateTime = simpleDateFormat.format(new Date());
-				int insertResult = jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-						"","",format3,"Open","",obj.getSm(),obj.getGm(),obj.getGate(),obj.getLc_name(),
-						currentDateTime,"Open","","","","",format3,"s");
+				// Final rule: while gate is in failsafe, do NOT save non-ct Open/Close reports.
+				boolean blockNonCtOpenInFailsafe = isGateInFailsafeForNonCtReports(obj.getLc_name(), obj.getGate());
+				int insertResult;
+				if (blockNonCtOpenInFailsafe) {
+					logger.info("Gate is in failsafe (managegates.is_failsafe=true). Skipping non-ct Open report insert for gate: {} (BOOM1_ID: {}, lc_name: {})",
+						obj.getGate(), obj.getGate(), obj.getLc_name());
+					insertResult = 0;
+				} else {
+					insertResult = jdbcTemplate1.update("insert into reports (tn, pn, tn_time, command, wer, sm, gm, lc, lc_name,added_on,lc_status,lc_lock_time,lc_pin,lc_pin_time,ackn,lc_open_time,redy) values(?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+							"","",format3,"Open","",obj.getSm(),obj.getGm(),obj.getGate(),obj.getLc_name(),
+							currentDateTime,"Open","","","","",format3,"s");
+				}
 				if (insertResult > 0) {
 					logger.info("SUCCESS: Created new Open report for gate: {} (BOOM1_ID: {}, lc_name: {}). Insert result: {}", 
 						obj.getGate(), obj.getGate(), obj.getLc_name(), insertResult);

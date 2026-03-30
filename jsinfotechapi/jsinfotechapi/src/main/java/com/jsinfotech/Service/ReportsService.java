@@ -31,6 +31,199 @@ import com.jsinfotech.Domain.Reports;
 public class ReportsService {
 	
 	private static final Logger logger = LogManager.getLogger(ReportsService.class);
+	private static final long PLAY_COMMAND_HOLD_MILLIS = 30_000L;
+
+	private volatile boolean playCommandStateTableEnsured = false;
+
+	private void ensurePlayCommandStateTable() {
+		if (playCommandStateTableEnsured) {
+			return;
+		}
+		synchronized (this) {
+			if (playCommandStateTableEnsured) {
+				return;
+			}
+			try {
+				jdbcTemplate1.execute(
+					"CREATE TABLE IF NOT EXISTS gate_play_command_state (" +
+					" username VARCHAR(100) NOT NULL," +
+					" gate_num VARCHAR(50) NOT NULL," +
+					" last_command VARCHAR(255) NULL," +
+					" last_seen_report_id BIGINT NOT NULL DEFAULT 0," +
+					" updated_on DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP," +
+					" PRIMARY KEY (username, gate_num)" +
+					")"
+				);
+				try {
+					jdbcTemplate1.execute("ALTER TABLE gate_play_command_state ADD COLUMN last_command VARCHAR(255) NULL");
+				} catch (Exception ignore) {
+					// Column may already exist.
+				}
+			} catch (Exception e) {
+				// If we cannot ensure the table, we fall back to returning null (no play command),
+				// rather than spamming repeated commands.
+				logger.warn("Failed to ensure gate_play_command_state table exists", e);
+			} finally {
+				playCommandStateTableEnsured = true;
+			}
+		}
+	}
+
+	private static final class PlayCommandState {
+		private final String lastCommand;
+		private final Date updatedOn;
+
+		private PlayCommandState(String lastCommand, Date updatedOn) {
+			this.lastCommand = lastCommand;
+			this.updatedOn = updatedOn;
+		}
+	}
+
+	private PlayCommandState getPlayCommandState(String username, String gateNum) {
+		try {
+			ensurePlayCommandStateTable();
+			String u = username != null ? username.trim() : "";
+			String g = gateNum != null ? gateNum.trim() : "";
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(
+				"SELECT last_command, updated_on FROM gate_play_command_state WHERE username=? AND gate_num=? LIMIT 1",
+				u, g
+			);
+			if (rows == null || rows.isEmpty()) {
+				return null;
+			}
+			Map<String, Object> row = rows.get(0);
+			Object cmdObj = row.get("last_command");
+			String lastCommand = cmdObj != null ? cmdObj.toString() : null;
+			Object tsObj = row.get("updated_on");
+			Date updatedOn = null;
+			if (tsObj instanceof java.sql.Timestamp) {
+				updatedOn = new Date(((java.sql.Timestamp) tsObj).getTime());
+			} else if (tsObj instanceof Date) {
+				updatedOn = (Date) tsObj;
+			}
+			return new PlayCommandState(lastCommand, updatedOn);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private boolean isGateInFailsafeByManagegates(String gateNum, String boom1Id) {
+		try {
+			String gn = gateNum != null ? gateNum.trim() : "";
+			String b1 = boom1Id != null ? boom1Id.trim() : "";
+			String raw = jdbcTemplate1.queryForObject(
+				"SELECT LOWER(COALESCE(CAST(is_failsafe AS CHAR), 'false')) FROM managegates " +
+				"WHERE Gate_Num=? OR BOOM1_ID=? OR handle=? LIMIT 1",
+				new Object[] { gn, b1, b1 },
+				String.class
+			);
+			String v = raw == null ? "" : raw.trim();
+			return !(v.isEmpty() || "false".equals(v) || "0".equals(v) || "null".equals(v));
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
+	private Long getLastSeenReportIdForPlayCommand(String username, String gateNum) {
+		try {
+			ensurePlayCommandStateTable();
+			String u = username != null ? username.trim() : "";
+			String g = gateNum != null ? gateNum.trim() : "";
+			return jdbcTemplate1.queryForObject(
+				"SELECT last_seen_report_id FROM gate_play_command_state WHERE username=? AND gate_num=?",
+				new Object[] { u, g },
+				Long.class
+			);
+		} catch (Exception e) {
+			return 0L;
+		}
+	}
+
+	private Date getLastSeenUpdatedOnForPlayCommand(String username, String gateNum) {
+		try {
+			ensurePlayCommandStateTable();
+			String u = username != null ? username.trim() : "";
+			String g = gateNum != null ? gateNum.trim() : "";
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(
+				"SELECT updated_on FROM gate_play_command_state WHERE username=? AND gate_num=? LIMIT 1",
+				u, g
+			);
+			if (rows == null || rows.isEmpty()) {
+				return null;
+			}
+			Object tsObj = rows.get(0).get("updated_on");
+			if (tsObj instanceof java.sql.Timestamp) {
+				return new Date(((java.sql.Timestamp) tsObj).getTime());
+			}
+			if (tsObj instanceof Date) {
+				return (Date) tsObj;
+			}
+			return null;
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private void upsertLastSeenReportIdForPlayCommand(String username, String gateNum, long reportId) {
+		try {
+			ensurePlayCommandStateTable();
+			String u = username != null ? username.trim() : "";
+			String g = gateNum != null ? gateNum.trim() : "";
+			// MySQL: INSERT ... ON DUPLICATE KEY UPDATE
+			jdbcTemplate1.update(
+				"INSERT INTO gate_play_command_state (username, gate_num, last_seen_report_id, updated_on) " +
+				"VALUES (?, ?, ?, NOW()) " +
+				"ON DUPLICATE KEY UPDATE last_seen_report_id=VALUES(last_seen_report_id), updated_on=NOW()",
+				u, g, reportId
+			);
+		} catch (Exception e) {
+			// best-effort
+		}
+	}
+
+	private void upsertPlayCommandState(String username, String gateNum, String command) {
+		try {
+			ensurePlayCommandStateTable();
+			String u = username != null ? username.trim() : "";
+			String g = gateNum != null ? gateNum.trim() : "";
+			String c = command != null ? command.trim() : null;
+			jdbcTemplate1.update(
+				"INSERT INTO gate_play_command_state (username, gate_num, last_command, last_seen_report_id, updated_on) " +
+				"VALUES (?, ?, ?, 0, NOW()) " +
+				"ON DUPLICATE KEY UPDATE last_command=VALUES(last_command), updated_on=NOW()",
+				u, g, c
+			);
+		} catch (Exception e) {
+			// best-effort
+		}
+	}
+
+	private String computePlayCommandFromLatestReportRow(String gateNum, Map<String, Object> row) {
+		if (row == null) return null;
+		String gn = gateNum != null ? gateNum.trim() : "";
+		if (gn.isEmpty()) return null;
+
+		String boomLock = row.get("Boom_Lock") != null ? row.get("Boom_Lock").toString().trim() : "";
+		if (!boomLock.isEmpty() && !"null".equalsIgnoreCase(boomLock)) {
+			String status = boomLock.toLowerCase();
+			if (status.startsWith("healthy")) return gn + " boom lock is healthy.";
+			if (status.startsWith("unhealthy")) return gn + " boom lock is unhealthy.";
+		}
+
+		String lcStatus = row.get("lc_status") != null ? row.get("lc_status").toString().trim() : "";
+		if (!lcStatus.isEmpty() && !"null".equalsIgnoreCase(lcStatus)) {
+			if ("open".equalsIgnoreCase(lcStatus)) return gn + " Opened";
+			if ("closed".equalsIgnoreCase(lcStatus)) return gn + " Closed";
+		}
+
+		String command = row.get("command") != null ? row.get("command").toString().trim() : "";
+		if (!command.isEmpty() && !"null".equalsIgnoreCase(command)) {
+			if ("open".equalsIgnoreCase(command)) return gn + " Opened";
+			if ("close".equalsIgnoreCase(command) || "closed".equalsIgnoreCase(command)) return gn + " Closed";
+		}
+
+		return null;
+	}
 
 	@Autowired
 	private NamedParameterJdbcTemplate jdbcTemplate;
@@ -98,6 +291,7 @@ public class ReportsService {
 				String lc_pin = rs.getString("lc_pin");
 				String lc_name = rs.getString("lc_name");
 				customer.setLc(rs.getString("lc"));
+				java.util.Date addedOnTs = rs.getTimestamp("added_on");
 				String lc_lock_time = rs.getString("lc_lock_time");
 				if(lc_lock_time == null) {
 					lc_lock_time = "";
@@ -124,6 +318,9 @@ public class ReportsService {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				
+				// `added_on` should be displayed as stored in DB (no IST compensation here).
+				customer.setAdded_on(addedOnTs);
 				String commandTrimmed = commandVal.trim();
 				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
 				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
@@ -236,6 +433,7 @@ public class ReportsService {
 				String lc_pin = rs.getString("lc_pin");
 				String lc_name = rs.getString("lc_name");
 				customer.setLc(rs.getString("lc"));
+				java.util.Date addedOnTs = rs.getTimestamp("added_on");
 				
 				// Handle null for lc_lock_time
 				String lc_lock_time = rs.getString("lc_lock_time");
@@ -270,6 +468,9 @@ public class ReportsService {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				
+				// `added_on` should be displayed as stored in DB (no IST compensation here).
+				customer.setAdded_on(addedOnTs);
 				String commandTrimmed = commandVal.trim();
 				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
 				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
@@ -440,6 +641,7 @@ public class ReportsService {
 					String lc_pin = rs.getString("lc_pin");
 					String lc_name = rs.getString("lc_name");
 					customer.setLc(rs.getString("lc"));
+					java.util.Date addedOnTs = rs.getTimestamp("added_on");
 
 					// Handle null for lc_lock_time
 					String lc_lock_time = rs.getString("lc_lock_time");
@@ -474,6 +676,9 @@ public class ReportsService {
 					if (tnTimeVal == null) {
 						tnTimeVal = "";
 					}
+					
+					// `added_on` should be displayed as stored in DB (no IST compensation here).
+					customer.setAdded_on(addedOnTs);
 					String commandTrimmed = commandVal.trim();
 					boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
 					boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
@@ -729,8 +934,10 @@ public class ReportsService {
 		});
 		String pattern = "yyyy-MM-dd HH:mm:ss";
 		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 		 String pattern3 = "HH:mm";
          SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         simpleDateFormat3.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
          String time1 = simpleDateFormat3.format(new Date());
          String time2 = simpleDateFormat.format(new Date());
          for(ManageGates m:l) {
@@ -755,8 +962,10 @@ public void addOpenClose(String command,String username,String gates) {
 		String [] str = gates.split(",");
 		String pattern = "yyyy-MM-dd HH:mm:ss";
 		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 		 String pattern3 = "HH:mm";
          SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         simpleDateFormat3.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
          String time1 = simpleDateFormat3.format(new Date());
          
          String close = "Close";
@@ -845,8 +1054,10 @@ public void addOpenClose(String command,String username,String gates) {
 		});
 		String pattern = "yyyy-MM-dd HH:mm:ss";
 		SimpleDateFormat simpleDateFormat = new SimpleDateFormat(pattern);
+		simpleDateFormat.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 		 String pattern3 = "HH:mm";
          SimpleDateFormat simpleDateFormat3 = new SimpleDateFormat(pattern3);
+         simpleDateFormat3.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
          String time1 = simpleDateFormat3.format(new Date());
          String time2 = simpleDateFormat.format(new Date());
 
@@ -940,6 +1151,7 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 				String lc_pin = rs.getString("lc_pin");
 				String lc_name = rs.getString("lc_name");
 				customer.setLc(rs.getString("lc"));
+				java.util.Date addedOnTs = rs.getTimestamp("added_on");
 				
 				// Handle null for lc_lock_time
 				String lc_lock_time = rs.getString("lc_lock_time");
@@ -974,6 +1186,9 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 				if (tnTimeVal == null) {
 					tnTimeVal = "";
 				}
+				
+				// `added_on` should be displayed as stored in DB (no IST compensation here).
+				customer.setAdded_on(addedOnTs);
 				String commandTrimmed = commandVal.trim();
 				boolean commandIsNoNetwork = "NO-NETWORK".equalsIgnoreCase(commandTrimmed);
 				boolean commandIsGnc = commandTrimmed.toUpperCase().startsWith("GNC");
@@ -1035,6 +1250,50 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 		
 		return li;
 
+	}
+
+	/**
+	 * For SM-side repeated play_command behavior:
+	 * return latest pending requesting-PN command per gate (R-Open/R-Close) while ackn is empty.
+	 */
+	public List<String> getPendingSmRequestCommands(String smUsername) {
+		List<String> result = new ArrayList<>();
+		try {
+			if (smUsername == null || smUsername.trim().isEmpty()) {
+				return result;
+			}
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(
+				"SELECT lc_name, command FROM reports " +
+				"WHERE sm=? " +
+				"AND command IN ('R-Open','R-Close') " +
+				"AND (ackn IS NULL OR ackn='') " +
+				"AND added_on >= DATE_SUB(NOW(), INTERVAL 24 HOUR) " +
+				"ORDER BY id DESC",
+				smUsername.trim()
+			);
+			Map<String, String> latestByGate = new HashMap<>();
+			for (Map<String, Object> row : rows) {
+				if (row == null) continue;
+				String gate = row.get("lc_name") != null ? row.get("lc_name").toString().trim() : "";
+				String command = row.get("command") != null ? row.get("command").toString().trim() : "";
+				if (gate.isEmpty() || command.isEmpty()) continue;
+				if (!latestByGate.containsKey(gate)) {
+					latestByGate.put(gate, command);
+				}
+			}
+			for (Map.Entry<String, String> e : latestByGate.entrySet()) {
+				String gate = e.getKey();
+				String command = e.getValue();
+				if ("R-Open".equalsIgnoreCase(command)) {
+					result.add(gate + " Requesting Open P N");
+				} else if ("R-Close".equalsIgnoreCase(command)) {
+					result.add(gate + " Requesting Close P N");
+				}
+			}
+		} catch (Exception ex) {
+			logger.warn("Error getting pending SM requesting commands for user: {}", smUsername, ex);
+		}
+		return result;
 	}
 
 
@@ -1156,191 +1415,53 @@ public HashMap<String,String> addcloseandpush(String username,String rolename) {
 			if (username == null || username.isEmpty() || gateNum == null || gateNum.trim().isEmpty()) {
 				return null;
 			}
-			
-			// Determine which field to query based on role
-			String roleField = "";
-			if (role != null && role.indexOf('s') != -1) {
-				roleField = "sm";
-			} else if (role != null && role.indexOf('g') != -1) {
-				roleField = "gm";
-			} else {
-				return null; // Invalid role
+
+			// Requirement: while gate is in failsafe, never show boom_lock_play_commad.
+			if (isGateInFailsafeByManagegates(gateNum, boom1Id)) {
+				return null;
 			}
 			
-			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
 			String gn = (gateNum != null) ? gateNum.trim() : "";
-			
-			// Priority 1: Check Boom_Lock first (takes precedence over main status)
-			// If reportId is provided, first check if there's a NEWER report with Boom_Lock updated
-			// If newer report has Boom_Lock, use that status; otherwise use reportId's Boom_Lock
-			if (reportId != null && !reportId.trim().isEmpty()) {
-				try {
-					int reportIdInt = Integer.parseInt(reportId.trim());
-					
-					// First, check if there's a NEWER report (id > reportId) with Boom_Lock for this gate
-					// This handles cases where Boom_Lock status updates in a newer row
-					String newerBoomLockQuery = "SELECT id, Boom_Lock FROM reports " +
-						"WHERE " + roleField + " = ? " +
-						"AND id > ? " +
-						"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
-						"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
-						"AND (Boom_Lock IS NOT NULL AND Boom_Lock != '') " +
-						"ORDER BY id DESC " +
-						"LIMIT 1";
-					
-					List<Map<String, Object>> newerRows = jdbcTemplate1.queryForList(newerBoomLockQuery, username, reportIdInt, b1, gn, b1, gn);
-					
-					// If newer report with Boom_Lock found, use that status
-					if (newerRows != null && !newerRows.isEmpty()) {
-						Map<String, Object> row = newerRows.get(0);
-						
-						// Try to find Boom_Lock column - check all possible case variations
-						Object boomLockObj = null;
-						for (String key : row.keySet()) {
-							if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
-								boomLockObj = row.get(key);
-								break;
-							}
-						}
-						
-						// If still not found, try common variations
-						if (boomLockObj == null) {
-							boomLockObj = row.get("Boom_Lock");
-						}
-						if (boomLockObj == null) {
-							boomLockObj = row.get("BOOM_LOCK");
-						}
-						if (boomLockObj == null) {
-							boomLockObj = row.get("boom_lock");
-						}
-						
-						if (boomLockObj != null) {
-							String boomLockValue = boomLockObj.toString().trim();
-							if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
-								String status = boomLockValue.toLowerCase();
-								if (status.startsWith("healthy")) {
-									return gn + " boom lock is healthy.";
-								} else if (status.startsWith("unhealthy")) {
-									return gn + " boom lock is unhealthy.";
-								}
-							}
-						}
-					}
-					
-					// If no newer report with Boom_Lock, check the specific reportId's Boom_Lock
-					String reportBoomLockQuery = "SELECT Boom_Lock FROM reports WHERE id = ?";
-					List<Map<String, Object>> reportRows = jdbcTemplate1.queryForList(reportBoomLockQuery, reportIdInt);
-					
-					if (reportRows != null && !reportRows.isEmpty()) {
-						Map<String, Object> row = reportRows.get(0);
-						
-						// Try to find Boom_Lock column - check all possible case variations
-						Object boomLockObj = null;
-						for (String key : row.keySet()) {
-							if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
-								boomLockObj = row.get(key);
-								break;
-							}
-						}
-						
-						// If still not found, try common variations
-						if (boomLockObj == null) {
-							boomLockObj = row.get("Boom_Lock");
-						}
-						if (boomLockObj == null) {
-							boomLockObj = row.get("BOOM_LOCK");
-						}
-						if (boomLockObj == null) {
-							boomLockObj = row.get("boom_lock");
-						}
-						
-						// If this specific reportId has Boom_Lock, return boom lock status message
-						if (boomLockObj != null) {
-							String boomLockValue = boomLockObj.toString().trim();
-							if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
-								String status = boomLockValue.toLowerCase();
-								if (status.startsWith("healthy")) {
-									return gn + " boom lock is healthy.";
-								} else if (status.startsWith("unhealthy")) {
-									return gn + " boom lock is unhealthy.";
-								}
-							}
-						}
-					}
-				} catch (NumberFormatException e) {
-					logger.warn("Invalid reportId format: {}", reportId);
-				} catch (Exception e) {
-					logger.warn("Error checking Boom_Lock for reportId {}: {}", reportId, e.getMessage());
-				}
-			}
-			
-			// If reportId not provided or doesn't have Boom_Lock, check latest report for this gate
-			// Use same query structure as findLatestClosedReportIdForGate for consistency
-			String latestReportQuery = "SELECT id, Boom_Lock FROM reports " +
-				"WHERE " + roleField + " = ? " +
-				"AND added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
+
+			// New rule: depend ONLY on NEW reports for this gate (not on mainStatus).
+			// Find latest report row for this gate (any new report row).
+			String b1 = (boom1Id != null) ? boom1Id.trim() : "";
+			List<Map<String, Object>> rows = jdbcTemplate1.queryForList(
+				"SELECT id, command, lc_status, Boom_Lock FROM reports " +
+				"WHERE added_on >= DATE_SUB(NOW(), INTERVAL 12 HOUR) " +
 				"AND (lc IN (?,?) OR lc_name IN (?,?)) " +
-				"ORDER BY id DESC " +
-				"LIMIT 1";
-			
-			List<Map<String, Object>> latestRows = jdbcTemplate1.queryForList(latestReportQuery, username, b1, gn, b1, gn);
-			
-			// Check Boom_Lock in the latest report
-			if (latestRows != null && !latestRows.isEmpty()) {
-				Map<String, Object> row = latestRows.get(0);
-				
-				// Try to find Boom_Lock column - check all possible case variations
-				Object boomLockObj = null;
-				for (String key : row.keySet()) {
-					if (key != null && key.equalsIgnoreCase("Boom_Lock")) {
-						boomLockObj = row.get(key);
-						break;
-					}
-				}
-				
-				// If still not found, try common variations
-				if (boomLockObj == null) {
-					boomLockObj = row.get("Boom_Lock");
-				}
-				if (boomLockObj == null) {
-					boomLockObj = row.get("BOOM_LOCK");
-				}
-				if (boomLockObj == null) {
-					boomLockObj = row.get("boom_lock");
-				}
-				
-				// If latest report has Boom_Lock, return boom lock status message (priority)
-				// This takes precedence over main status - once Boom_Lock is updated, show that status
-				if (boomLockObj != null) {
-					String boomLockValue = boomLockObj.toString().trim();
-					// Check if Boom_Lock has a valid value (not empty, not "null" string)
-					if (!boomLockValue.isEmpty() && !boomLockValue.equalsIgnoreCase("null") && !boomLockValue.equalsIgnoreCase("NULL")) {
-						// Extract status from format "Healthy[HH:mm]" or "Unhealthy[HH:mm]"
-						String status = boomLockValue.toLowerCase();
-						if (status.startsWith("healthy")) {
-							return gn + " boom lock is healthy.";
-						} else if (status.startsWith("unhealthy")) {
-							return gn + " boom lock is unhealthy.";
-						}
-						// If Boom_Lock has a value but doesn't match healthy/unhealthy, still return it
-						// This handles any edge cases where format might be slightly different
-						return gn + " boom lock is " + status.split("\\[")[0] + ".";
-					}
-				}
+				"ORDER BY id DESC LIMIT 1",
+				b1, gn, b1, gn
+			);
+			if (rows == null || rows.isEmpty()) {
+				return null;
 			}
-			
-			// Priority 2: Check main status from managegates table (not command field from reports)
-			// Use main status to determine Open/Closed play commands
-			if (mainStatus != null && !mainStatus.trim().isEmpty()) {
-				String mainStatusLower = mainStatus.toLowerCase().trim();
-				if ("open".equals(mainStatusLower)) {
-					return gn + " Opened";
-				} else if ("closed".equals(mainStatusLower)) {
-					return gn + " Closed";
-				}
+			Map<String, Object> row = rows.get(0);
+			String playCommand = computePlayCommandFromLatestReportRow(gn, row);
+			if (playCommand == null || playCommand.trim().isEmpty()) {
+				return null;
 			}
-			
-			// No valid play command found
+
+			// No report-id dependency: show each command for 30s from first appearance,
+			// then force null until command text changes.
+			PlayCommandState state = getPlayCommandState(username, gn);
+			if (state == null || state.lastCommand == null || state.lastCommand.trim().isEmpty()) {
+				upsertPlayCommandState(username, gn, playCommand);
+				return playCommand;
+			}
+
+			if (!state.lastCommand.trim().equalsIgnoreCase(playCommand.trim())) {
+				upsertPlayCommandState(username, gn, playCommand);
+				return playCommand;
+			}
+
+			if (state.updatedOn == null) {
+				return null;
+			}
+			long ageMs = System.currentTimeMillis() - state.updatedOn.getTime();
+			if (ageMs <= PLAY_COMMAND_HOLD_MILLIS) {
+				return playCommand;
+			}
 			return null;
 			
 		} catch (Exception e) {

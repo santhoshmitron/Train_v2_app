@@ -1,6 +1,7 @@
 package com.jsinfotech.Controller;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import org.apache.logging.log4j.LogManager;
@@ -56,14 +57,19 @@ public class ReportsController {
 				return report;
 					
 				}else if(role.indexOf('g')!=-1) {
-					// Get Redis audio only (play commands moved to getstatus API)
-					String com = userRepository.poppAudio(username);
-					if (com != null && !com.trim().isEmpty()) {
-				    commands.add(com);
+					// Get all Redis audio events for this user (supports multi-gate commands in one response)
+					java.util.List<String> comList = userRepository.popAllAudio(username);
+					if (comList != null) {
+						for (String com : comList) {
+							if (com != null && !com.trim().isEmpty()) {
+								commands.add(com);
+							}
+						}
 					}
 					
 					// Remove empty strings
 					commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
+					commands = new ArrayList<>(new LinkedHashSet<>(commands));
 					
 					report.setPlay_command(commands);
 					if ("sm".equalsIgnoreCase(scope)) {
@@ -75,20 +81,30 @@ public class ReportsController {
 
 					return report;
 				}else {
-					  // Get Redis audio only (play commands moved to getstatus API)
-					  String com = userRepository.poppAudio(username);
-					  String com1 = userRepository.poppAudio1(username);
+					  // SM behavior:
+					  // 1) normal Redis audio is one-time (acknowledged / received messages)
+					  // 2) requesting PN should repeat until ACK, so derive from pending DB rows
+					  java.util.List<String> comList = userRepository.popAllAudio(username);
 					  
-					  // Add Redis audio (only non-empty)
-					  if (com != null && !com.trim().isEmpty()) {
-				    	commands.add(com);
-				    }
-					  if (com1 != null && !com1.trim().isEmpty()) {
-				    	commands.add(com1);
-				    }
+					  if (comList != null) {
+						  for (String com : comList) {
+							  if (com != null && !com.trim().isEmpty()) {
+								  commands.add(com);
+							  }
+						  }
+					  }
+					  List<String> pendingRequestCommands = Service.getPendingSmRequestCommands(username);
+					  if (pendingRequestCommands != null) {
+						  for (String cmd : pendingRequestCommands) {
+							  if (cmd != null && !cmd.trim().isEmpty()) {
+								  commands.add(cmd);
+							  }
+						  }
+					  }
 					  
 					  // Remove empty strings
 					  commands.removeIf(cmd -> cmd == null || cmd.trim().isEmpty());
+					  commands = new ArrayList<>(new LinkedHashSet<>(commands));
 					  
 					report.setPlay_command(commands);
 					logger.info("GetReportsm"+username+role);
@@ -180,6 +196,7 @@ public class ReportsController {
 			}
 			
 			java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("HH:mm");
+			formatter.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
 			String ackn = formatter.format(new java.util.Date());
 			
 			boolean success = Service.updateFailsafeAck(reportId, ackn);

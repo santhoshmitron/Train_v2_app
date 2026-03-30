@@ -49,7 +49,7 @@ public class Reports {
 		this.to = to;
 	}
 	private String ackn;
-	@JsonFormat(pattern="yyyy-MM-dd HH:mm:ss")
+	@JsonFormat(pattern="yyyy-MM-dd HH:mm:ss", timezone="UTC")
 	private Date added_on;
 	private String lc_open_time;
 	private String redy;
